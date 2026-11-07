@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>DeepPitch Analytics Pro | منصة التحليلات والترتيب والنتائج الحية</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#080c15">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1>DeepPitch <span>Analytics Pro</span></h1>
+    <p>المحرك البحثي الرياضي: التوقعات الذكية، رادار المفاجآت، الترتيب المباشر، وأفضل الهدافين</p>
+  </header>
+
+  <!-- شريط الرجوع لشاشات الموبايل (Sticky App Bar) -->
+  <div id="mobile-back-bar" class="mobile-back-bar" style="display: none;">
+    <button class="back-btn" onclick="goBackToMainMenu()">
+      <span>⬅️</span> العودة للرئيسية
+    </button>
+    <span id="mobile-view-title" class="back-bar-title">عرض النتائج</span>
+  </div>
+
+  <!-- شبكة الكروت الرئيسية (6 كروت متجاوبة) -->
+  <div class="hub-grid" id="hub-grid-container">
+    <!-- 1: مباريات الجولة -->
+    <div class="hub-card" data-view="fixtures" onclick="activateSection('fixtures')">
+      <div class="hub-top">
+        <span class="hub-icon">⚽</span>
+        <span class="hub-badge">9 دوريات</span>
+      </div>
+      <div>
+        <div class="hub-title">مباريات الجولة والرادار</div>
+        <div class="hub-desc">توقعات دقيقة، مؤشرات الصدمة، ومختبر السيناريوهات</div>
+      </div>
+    </div>
+
+    <!-- 2: مباريات اليوم المباشرة -->
+    <div class="hub-card" data-view="today" onclick="activateSection('today')">
+      <div class="hub-top">
+        <span class="hub-icon">🔴</span>
+        <span class="hub-badge live-pulse">مباشر ⚡</span>
+      </div>
+      <div>
+        <div class="hub-title">مباريات اليوم المباشرة</div>
+        <div class="hub-desc">تحديث فوري للنتائج، القنوات الناقلة، والملاعب</div>
+      </div>
+    </div>
+
+    <!-- 3: الترتيب والهدافين -->
+    <div class="hub-card" data-view="standings" onclick="activateSection('standings')">
+      <div class="hub-top">
+        <span class="hub-icon">🏆</span>
+        <span class="hub-badge">رسمي ESPN</span>
+      </div>
+      <div>
+        <div class="hub-title">جدول الترتيب والهدافين</div>
+        <div class="hub-desc">المراكز الرسمية، مقاعد أوروبا والهبوط، وأفضل 10 هدافين</div>
+      </div>
+    </div>
+
+    <!-- 4: محاكي نهاية الموسم -->
+    <div class="hub-card" data-view="projections" onclick="activateSection('projections')">
+      <div class="hub-top">
+        <span class="hub-icon">🔮</span>
+        <span class="hub-badge" style="color:var(--accent-cyan); border-color:var(--accent-cyan);">Monte Carlo</span>
+      </div>
+      <div>
+        <div class="hub-title">محاكي نهاية الموسم</div>
+        <div class="hub-desc">1,500 محاكاة: نسب التتويج، المربع الذهبي، وشبح الهبوط</div>
+      </div>
+    </div>
+
+    <!-- 5: مصفوفة صعوبة المباريات FDR -->
+    <div class="hub-card" data-view="fdr" onclick="activateSection('fdr')">
+      <div class="hub-top">
+        <span class="hub-icon">🗓️</span>
+        <span class="hub-badge" style="color:var(--accent-green); border-color:var(--accent-green);">FDR Matrix</span>
+      </div>
+      <div>
+        <div class="hub-title">صعوبة المباريات (FDR)</div>
+        <div class="hub-desc">تقييم الـ 5 مباريات القادمة، واكتشاف أفضل وأصعب الجداول</div>
+      </div>
+    </div>
+
+    <!-- 6: غرفة الأخبار -->
+    <div class="hub-card" data-view="news" onclick="activateSection('news')">
+      <div class="hub-top">
+        <span class="hub-icon">📰</span>
+        <span class="hub-badge live-pulse">عاجل ⚡</span>
+      </div>
+      <div>
+        <div class="hub-title">غرفة الأخبار الرياضية</div>
+        <div class="hub-desc">آخر 20 خبراً حياً وبرقيات الملاعب العالمية</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- شريط اختيار الدوريات وصحيفة الجولة -->
+  <div id="main-menu-section" style="display: none;">
+    <div class="league-bar" id="league-bar"></div>
+    <div style="text-align: center; margin-top: 10px;">
+      <button class="newspaper-btn" onclick="openNewspaperModal()">
+        📰 قراءة صحيفة الجولة الذكية (AI Gazette)
+      </button>
+    </div>
+  </div>
+
+  <!-- مساحة الترحيب الأولى -->
+  <div id="welcome-placeholder">
+    <div class="welcome-icon">⚡</div>
+    <h2>مرحباً بك في منصة DeepPitch Pro</h2>
+    <p>اختر إحدى البوابات الرئيسية أعلاه لاستعراض المباريات الحية، التوقعات التكتيكية، أو جداول الترتيب الرسمية.</p>
+  </div>
+
+  <!-- 1. محتوى مباريات الجولة والرادار -->
+  <div id="fixtures-view" style="display: none;">
+    <div id="fixtures-container" class="fixtures-grid">
+      <div class="loading-state">جاري تشغيل محرك النمذجة والرادار الإحصائي...</div>
+    </div>
+  </div>
+
+  <!-- 2. محتوى مباريات اليوم والمتابعة الحية -->
+  <div id="today-view" style="display: none;">
+    <div class="today-toolbar">
+      <div style="font-size:0.95rem; font-weight:700;">
+        📅 مباريات اليوم: <span id="today-date-txt" style="color:var(--accent-gold)"></span>
+      </div>
+      <div style="font-size:0.8rem; color:var(--muted); display:flex; align-items:center; gap:6px;">
+        <span class="live-dot-pulse"></span>
+        <span id="polling-status-txt">تحديث ذكي متصل</span>
+      </div>
+    </div>
+    <div id="today-matches-container" class="today-grid"></div>
+  </div>
+
+  <!-- 3. محتوى جدول الترتيب الرسمي والهدافين -->
+  <div id="standings-view" style="display: none;">
+    <div class="standings-layout">
+      <div class="data-card">
+        <div class="standings-card-header">
+          <h3 style="font-size:1.1rem; color:var(--text);">جدول الترتيب الرسمي</h3>
+          <div class="legend-badges">
+            <span><span style="color:var(--accent-cyan)">■</span> أبطال أوروبا</span>
+            <span><span style="color:var(--accent-gold)">■</span> الدوري الأوروبي</span>
+            <span><span style="color:var(--accent-red)">■</span> الهبوط</span>
+          </div>
+        </div>
+        <div class="table-container">
+          <table class="styled-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>النادي</th>
+                <th>لعب</th>
+                <th class="col-hide-mobile">فاز</th>
+                <th class="col-hide-mobile">تعادل</th>
+                <th class="col-hide-mobile">خسر</th>
+                <th class="col-hide-mobile">له:عليه</th>
+                <th>فارق</th>
+                <th>نقاط</th>
+                <th class="col-hide-mobile-sm">آخر 5</th>
+              </tr>
+            </thead>
+            <tbody id="official-standings-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="data-card">
+        <h3 style="font-size:1.1rem; color:var(--accent-gold); margin-bottom:14px;">🎯 أفضل 10 هدافين</h3>
+        <div id="top-scorers-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. محتوى محاكي نهاية الموسم (Monte Carlo) -->
+  <div id="projections-view" style="display: none;">
+    <div class="info-note-card">
+      🔮 <strong>محاكاة مونت كارلو (1,500 دورة):</strong> احتساب أدق احتمالات التتويج، المربع الذهبي، وشبح الهبوط بناءً على قوة المواجهات المتبقية.
+    </div>
+    <div class="data-card table-container">
+      <table class="styled-table">
+        <thead>
+          <tr>
+            <th>المركز</th>
+            <th>النادي</th>
+            <th>لعب</th>
+            <th class="col-hide-mobile">النقاط</th>
+            <th>المتوقعة 🏁</th>
+            <th>البطل 🏆</th>
+            <th>توب 4 🇪🇺</th>
+            <th>هبوط 🔻</th>
+          </tr>
+        </thead>
+        <tbody id="projections-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 5. محتوى مصفوفة صعوبة المباريات (FDR) -->
+  <div id="fdr-view" style="display: none;">
+    <div class="info-note-card">
+      🗓️ <strong>مصفوفة FDR (1-5):</strong> تقييم الجولات الـ 5 المقبلة.
+      <span style="color:#00e676; font-weight:800;">1: سهل</span> • 
+      <span style="color:#ffd600; font-weight:800;">3: متوازن</span> • 
+      <span style="color:#ff5252; font-weight:800;">5: قمة</span>.
+    </div>
+    <div class="data-card table-container">
+      <table class="styled-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>النادي</th>
+            <th>المعدل</th>
+            <th style="text-align:center;">1</th>
+            <th style="text-align:center;">2</th>
+            <th style="text-align:center;">3</th>
+            <th style="text-align:center;">4</th>
+            <th style="text-align:center;">5</th>
+          </tr>
+        </thead>
+        <tbody id="fdr-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 6. محتوى غرفة الأخبار الرياضية (20 خبراً) -->
+  <div id="news-view" style="display: none;">
+    <div class="today-toolbar">
+      <div style="font-size:0.95rem; font-weight:700; display:flex; align-items:center; gap:8px;">
+        <span>📰</span>
+        <span>برقيات الأخبار العاجلة (أحدث 20 خبراً FIFO)</span>
+      </div>
+      <button onclick="loadNewsFeed(true)" class="retry-btn" style="padding:4px 14px; font-size:0.8rem; margin:0;">
+        تحديث فوري ↻
+      </button>
+    </div>
+    <div id="news-container" class="news-grid-cards">
+      <div class="loading-state">جاري سحب برقيات الأخبار العالمية...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal التحليل التكتيكي ومختبر السيناريوهات Sandbox -->
+<div class="modal-overlay" id="tactical-modal">
+  <div class="modal-content">
+    <button class="close-btn" onclick="closeModal('tactical-modal')">&times;</button>
+    <div style="text-align: center; margin-bottom: 12px;">
+      <h3 id="m-title" style="font-size: 1.25rem;"></h3>
+      <div id="m-time" style="font-size: 0.85rem; color: var(--muted);"></div>
+    </div>
+
+    <div class="radar-reason-card" id="m-radar-box">
+      <!-- قسم المحلل التكتيكي الذكي AI Pundit -->
+      <div class="ai-pundit-card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:6px;">
+          <div style="font-weight:800; font-size:0.92rem; display:flex; align-items:center; gap:6px;">
+            <span>🎙️</span>
+            <span>المحلل التكتيكي الذكي</span>
+            <span class="ai-badge">AI Pundit</span>
+          </div>
+          <button id="ai-ask-btn" class="ai-btn" onclick="askAiPundit()">
+            ✨ استشر المحلل الآن
+          </button>
+        </div>
+        <div id="ai-response-box" class="ai-response" style="display:none;"></div>
+      </div>
+
+      <!-- سجل المواجهات المباشرة H2H -->
+      <div class="h2h-card">
+        <div class="h2h-header">
+          <span>⚔️ تاريخ المواجهات المباشرة (آخر 6 لقاءات)</span>
+          <span id="h2h-avg-goals" style="color:var(--accent-gold); font-size:0.78rem;"></span>
+        </div>
+        <div class="h2h-bar-wrap">
+          <div id="h2h-bar-h" class="h2h-bar-h" style="width: 33%;"></div>
+          <div id="h2h-bar-d" class="h2h-bar-d" style="width: 33%;"></div>
+          <div id="h2h-bar-a" class="h2h-bar-a" style="width: 34%;"></div>
+        </div>
+        <div class="h2h-legend">
+          <span id="h2h-lbl-h">فوز المضيف: 0</span>
+          <span id="h2h-lbl-d">تعادل: 0</span>
+          <span id="h2h-lbl-a">فوز الضيف: 0</span>
+        </div>
+        <div id="h2h-streak-txt" class="h2h-streak-box"></div>
+        <div id="h2h-chips-list" class="h2h-chips"></div>
+      </div>
+
+      <div style="font-weight: 800; margin-bottom: 4px;" id="m-radar-badge"></div>
+      <div style="color: var(--muted); line-height: 1.5;" id="m-radar-text"></div>
+    </div>
+
+    <div class="stat-compare">
+      <div class="compare-row">
+        <span>⚔️ قوة هجوم <strong id="m-h-name"></strong>: <strong id="m-h-att" style="color:var(--accent-green)"></strong></span>
+        <span>🛡️ هشاشة دفاع <strong id="m-a-name"></strong>: <strong id="m-a-def" style="color:var(--accent-cyan)"></strong></span>
+      </div>
+      <div class="stat-bar-box">
+        <div id="m-bar-h-att" class="bar-l" style="width: 50%;"></div>
+        <div id="m-bar-a-def" class="bar-r" style="width: 50%;"></div>
+      </div>
+      <div class="compare-row">
+        <span>⚔️ قوة هجوم <strong id="m-a-name2"></strong>: <strong id="m-a-att" style="color:var(--accent-green)"></strong></span>
+        <span>🛡️ هشاشة دفاع <strong id="m-h-name2"></strong>: <strong id="m-h-def" style="color:var(--accent-cyan)"></strong></span>
+      </div>
+      <div class="stat-bar-box" style="margin-bottom: 0;">
+        <div id="m-bar-a-att" class="bar-l" style="width: 50%;"></div>
+        <div id="m-bar-h-def" class="bar-r" style="width: 50%;"></div>
+      </div>
+    </div>
+
+    <div class="sandbox-box">
+      <div class="sandbox-title">
+        <span>🧪 مختبر السيناريوهات (What-If)</span>
+        <button onclick="resetSandbox()" style="background:#1d2a45; color:#fff; border:none; padding:3px 10px; border-radius:6px; font-size:0.75rem; cursor:pointer;">إعادة ضبط ↺</button>
+      </div>
+      <div class="sandbox-controls">
+        <label class="control-item">
+          <span>🟥 طرد لـ (<span id="sb-h-name"></span>)</span>
+          <input type="checkbox" id="sb-red-home" onchange="recalculateSandbox()">
+        </label>
+        <label class="control-item">
+          <span>🟥 طرد لـ (<span id="sb-a-name"></span>)</span>
+          <input type="checkbox" id="sb-red-away" onchange="recalculateSandbox()">
+        </label>
+      </div>
+      <div style="margin-top: 10px; font-size: 0.82rem; color: var(--muted); display:flex; justify-content:space-between; align-items:center;">
+        <span>🏟️ أفضلية الأرض:</span>
+        <input type="range" id="sb-home-boost" min="1.10" max="1.55" step="0.05" value="1.25" oninput="recalculateSandbox()" style="width: 48%;">
+        <span id="sb-boost-val" style="color:var(--accent-green); font-weight:800;">1.25x</span>
+      </div>
+    </div>
+
+    <div style="background: #090e18; border: 1px solid var(--accent-gold); border-radius: 12px; padding: 12px; text-align: center; margin-bottom: 15px;">
+      <div style="font-size: 0.8rem; color: var(--muted);">النتيجة المحاكاة والأهداف المتوقعة:</div>
+      <div style="font-size: 1.5rem; font-weight: 900; color: var(--accent-gold);" id="sb-score">2 - 1</div>
+      <div style="font-size: 0.8rem; color: var(--muted); margin-top: 2px;" id="sb-xg-text">xG: 1.80 - 0.90</div>
+      
+      <div class="prob-bar" style="margin-top: 10px;">
+        <div class="prob-home" id="sb-bar-h" style="width: 50%;"></div>
+        <div class="prob-draw" id="sb-bar-d" style="width: 25%;"></div>
+        <div class="prob-away" id="sb-bar-a" style="width: 25%;"></div>
+      </div>
+      <div class="prob-labels" style="margin-bottom: 8px;">
+        <span id="sb-lbl-h">50%</span>
+        <span id="sb-lbl-d">25%</span>
+        <span id="sb-lbl-a">25%</span>
+      </div>
+
+      <div style="display:flex; justify-content:space-around; font-size:0.8rem; border-top:1px solid #1d2a45; padding-top:8px;">
+        <span>تسجيل الفريقين (BTTS): <strong id="sb-btts" style="color:var(--accent-green)">-</strong></span>
+        <span>أكثر من 2.5: <strong id="sb-over" style="color:var(--accent-gold)">-</strong></span>
+      </div>
+    </div>
+
+    <h4 style="font-size: 0.9rem; color: var(--accent-cyan); margin-bottom: 4px;">📊 مصفوفة احتمالات النتائج الدقيقة</h4>
+    <div class="table-container">
+      <table class="heatmap-table" id="sb-heatmap-grid"></table>
+    </div>
+  </div>
+</div>
+
+<!-- Modal تذكرة الحسم الإحصائي -->
+<div class="modal-overlay" id="acca-modal">
+  <div class="modal-content" style="max-width: 520px;">
+    <button class="close-btn" onclick="closeModal('acca-modal')">&times;</button>
+    <div style="text-align: center; margin-bottom: 15px;">
+      <h3 style="color: var(--accent-gold); font-size: 1.25rem;">🎯 تذكرة الحسم الإحصائي للجولة</h3>
+      <p style="font-size: 0.8rem; color: var(--muted);">أعلى 3 مواجهات ذات أقل معدل تشتت عشوائي وأكبر موثوقية رياضية</p>
+    </div>
+    <div id="acca-picks-list" style="margin-bottom: 15px;"></div>
+    <div style="background:#0c121e; padding:15px; border-radius:12px; text-align:center; border:1px solid var(--card-border);">
+      <div style="font-size: 0.82rem; color: var(--muted);">الاحتمالية التراكمية المشتركة:</div>
+      <div style="font-size: 1.8rem; font-weight: 900; color: var(--accent-green);" id="acca-joint-prob">0%</div>
+      <div style="font-size: 0.72rem; color: var(--accent-cyan); margin-top: 4px;">محسوبة بموجب حاصل الضرب التوافقي Joint Probability</div>
+    </div>
+  </div>
+</div>
+
+<!-- زر السكاوت العائم المريح للموبايل -->
+<button id="scout-float-btn" class="scout-toggle-btn" onclick="toggleScoutWidget()">
+  <span style="font-size: 1.2rem;">🤖</span>
+  <span>مستشار الفانتازي</span>
+</button>
+
+<!-- Modal صحيفة الجولة الذكية -->
+<div class="modal-overlay" id="newspaper-modal">
+  <div class="modal-content newspaper-modal-content">
+    <button class="close-btn" onclick="closeModal('newspaper-modal')">&times;</button>
+    <div class="newspaper-header">
+      <div class="newspaper-sub-bar">
+        <span>EDITION: WEEKLY AI PREVIEW</span>
+        <span>•</span>
+        <span id="gazette-date-txt">نوفمبر 2026</span>
+        <span>•</span>
+        <span>DEEPPITCH SPECIAL REPORT</span>
+      </div>
+      <h2 class="newspaper-title">DEEPPITCH <span>GAZETTE</span></h2>
+      <div class="newspaper-rule"></div>
+    </div>
+    <div id="gazette-body" class="newspaper-body"></div>
+  </div>
+</div>
+
+<!-- Modal إحصائيات وتفاصيل مباراة اليوم الشاملة -->
+<!-- Modal إحصائيات وتشكيلة مباراة اليوم الشاملة -->
+<div class="modal-overlay" id="today-match-modal" style="display: none;">
+  <div class="modal-content" style="max-width: 650px;">
+    <button class="close-btn" onclick="closeModal('today-match-modal')">&times;</button>
+    <div style="text-align: center; margin-bottom: 12px;">
+      <span id="tm-league-badge" style="background:#1a233a; color:var(--accent-gold); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:800; border:1px solid var(--card-border);"></span>
+      <div id="tm-status-text" style="font-size:0.82rem; color:var(--muted); margin-top:6px;"></div>
+    </div>
+
+    <!-- كارت النتيجة والفرق -->
+    <div style="display:flex; justify-content:space-around; align-items:center; background:#0c121e; padding:12px; border-radius:14px; border:1px solid var(--card-border); margin-bottom:12px;">
+      <div style="text-align:center; width:35%;">
+        <img id="tm-home-crest" src="" width="48" height="48" style="object-fit:contain; margin-bottom:4px;">
+        <div id="tm-home-name" style="font-weight:900; font-size:0.95rem;"></div>
+      </div>
+      <div style="text-align:center; width:30%;">
+        <div id="tm-score" style="font-size:1.8rem; font-weight:900; color:var(--accent-gold); letter-spacing:2px;"></div>
+        <div id="tm-venue" style="font-size:0.72rem; color:var(--muted); margin-top:4px;"></div>
+      </div>
+      <div style="text-align:center; width:35%;">
+        <img id="tm-away-crest" src="" width="48" height="48" style="object-fit:contain; margin-bottom:4px;">
+        <div id="tm-away-name" style="font-weight:900; font-size:0.95rem;"></div>
+      </div>
+    </div>
+
+    <!-- أزرار التبديل: الإحصائيات / التشكيلة الرسمية -->
+    <div style="display:flex; justify-content:center; gap:10px; margin-bottom:14px;">
+      <button id="btn-tab-stats" class="league-btn active" onclick="switchMatchTab('stats')" style="flex:1; justify-content:center;">
+        📊 الإحصائيات والأهداف
+      </button>
+      <button id="btn-tab-lineup" class="league-btn" onclick="switchMatchTab('lineup')" style="flex:1; justify-content:center;">
+        📋 التشكيلة والتقييمات
+      </button>
+    </div>
+
+    <!-- التبويب الأول: مسجلو الأهداف والإحصائيات -->
+    <div id="tm-stats-wrapper">
+      <div id="tm-goals-box" style="background:#090e18; border:1px solid var(--card-border); border-radius:12px; padding:10px 14px; margin-bottom:14px; display:none;">
+        <div style="font-size:0.8rem; font-weight:800; color:var(--accent-gold); text-align:center; margin-bottom:6px;">
+          ⚽ مسجلو الأهداف
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; font-size:0.82rem; gap:10px;">
+          <div id="tm-home-goals" style="width:48%; text-align:right; color:#e2e8f0; line-height:1.6;"></div>
+          <div style="width:1px; background:var(--card-border); align-self:stretch;"></div>
+          <div id="tm-away-goals" style="width:48%; text-align:left; color:#e2e8f0; line-height:1.6;"></div>
+        </div>
+      </div>
+
+      <div id="tm-stats-card" style="background:var(--card); padding:14px; border-radius:14px; border:1px solid var(--card-border);">
+        <h4 style="font-size:0.92rem; color:var(--accent-cyan); margin-bottom:12px; text-align:center;">📊 إحصائيات ومجريات اللقاء الحية</h4>
+
+        <div style="margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; font-size:0.82rem; font-weight:700; margin-bottom:4px;">
+            <span id="tm-stat-pos-h">50%</span>
+            <span style="color:var(--muted);">الاستحواذ</span>
+            <span id="tm-stat-pos-a">50%</span>
+          </div>
+          <div style="display:flex; height:6px; background:#1a233a; border-radius:3px; overflow:hidden;">
+            <div id="tm-bar-pos-h" style="background:var(--accent-green); width:50%;"></div>
+            <div id="tm-bar-pos-a" style="background:var(--accent-cyan); width:50%;"></div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; font-size:0.82rem; font-weight:700; margin-bottom:4px;">
+            <span id="tm-stat-pass-h">0%</span>
+            <span style="color:var(--muted);">دقة التمريرات</span>
+            <span id="tm-stat-pass-a">0%</span>
+          </div>
+          <div style="display:flex; height:6px; background:#1a233a; border-radius:3px; overflow:hidden;">
+            <div id="tm-bar-pass-h" style="background:var(--accent-green); width:50%;"></div>
+            <div id="tm-bar-pass-a" style="background:var(--accent-cyan); width:50%;"></div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; font-size:0.82rem; font-weight:700; margin-bottom:4px;">
+            <span id="tm-stat-shots-h">0</span>
+            <span style="color:var(--muted);">إجمالي التسديدات</span>
+            <span id="tm-stat-shots-a">0</span>
+          </div>
+          <div style="display:flex; height:6px; background:#1a233a; border-radius:3px; overflow:hidden;">
+            <div id="tm-bar-shots-h" style="background:var(--accent-green); width:50%;"></div>
+            <div id="tm-bar-shots-a" style="background:var(--accent-cyan); width:50%;"></div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; font-size:0.82rem; font-weight:700; margin-bottom:4px;">
+            <span id="tm-stat-sot-h">0</span>
+            <span style="color:var(--muted);">تسديدات على المرمى</span>
+            <span id="tm-stat-sot-a">0</span>
+          </div>
+          <div style="display:flex; height:6px; background:#1a233a; border-radius:3px; overflow:hidden;">
+            <div id="tm-bar-sot-h" style="background:var(--accent-green); width:50%;"></div>
+            <div id="tm-bar-sot-a" style="background:var(--accent-cyan); width:50%;"></div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; font-size:0.82rem; font-weight:700; margin-bottom:4px;">
+            <span id="tm-stat-corn-h">0</span>
+            <span style="color:var(--muted);">الضربات الركنية</span>
+            <span id="tm-stat-corn-a">0</span>
+          </div>
+          <div style="display:flex; height:6px; background:#1a233a; border-radius:3px; overflow:hidden;">
+            <div id="tm-bar-corn-h" style="background:var(--accent-green); width:50%;"></div>
+            <div id="tm-bar-corn-a" style="background:var(--accent-cyan); width:50%;"></div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; font-size:0.82rem; font-weight:700; margin-bottom:4px;">
+            <span id="tm-stat-off-h">0</span>
+            <span style="color:var(--muted);">حالات التسلل</span>
+            <span id="tm-stat-off-a">0</span>
+          </div>
+          <div style="display:flex; height:6px; background:#1a233a; border-radius:3px; overflow:hidden;">
+            <div id="tm-bar-off-h" style="background:var(--accent-green); width:50%;"></div>
+            <div id="tm-bar-off-a" style="background:var(--accent-cyan); width:50%;"></div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; font-size:0.82rem; font-weight:700; margin-bottom:4px;">
+            <span id="tm-stat-fouls-h">0</span>
+            <span style="color:var(--muted);">الأخطاء المرتكبة</span>
+            <span id="tm-stat-fouls-a">0</span>
+          </div>
+          <div style="display:flex; height:6px; background:#1a233a; border-radius:3px; overflow:hidden;">
+            <div id="tm-bar-fouls-h" style="background:var(--accent-green); width:50%;"></div>
+            <div id="tm-bar-fouls-a" style="background:var(--accent-cyan); width:50%;"></div>
+          </div>
+        </div>
+
+        <div>
+          <div style="display:flex; justify-content:space-between; font-size:0.82rem; font-weight:700; margin-bottom:4px;">
+            <span>
+              <span id="tm-stat-yc-h" style="color:var(--accent-gold)">0 🟨</span>
+              <span id="tm-stat-rc-h" style="color:var(--accent-red); margin-right:4px;">0 🟥</span>
+            </span>
+            <span style="color:var(--muted);">البطاقات (صفراء / حمراء)</span>
+            <span>
+              <span id="tm-stat-yc-a" style="color:var(--accent-gold)">🟨 0</span>
+              <span id="tm-stat-rc-a" style="color:var(--accent-red); margin-left:4px;">🟥 0</span>
+            </span>
+          </div>
+          <div style="display:flex; height:6px; background:#1a233a; border-radius:3px; overflow:hidden;">
+            <div id="tm-bar-cards-h" style="background:var(--accent-gold); width:50%;"></div>
+            <div id="tm-bar-cards-a" style="background:var(--accent-red); width:50%;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- التبويب الثاني: التشكيلة الرسمية والملعب التكتيكي -->
+    <div id="tm-lineup-tab" style="display:none;">
+      <div id="tm-lineup-content"></div>
+    </div>
+
+    <!-- معلومات القناة والمعلق -->
+    <div style="display:flex; justify-content:space-between; margin-top:12px; font-size:0.78rem; color:var(--muted); background:#0c121e; padding:10px 12px; border-radius:10px;">
+      <div>📺 <strong id="tm-info-channel">-</strong></div>
+      <div>🎙️ <strong id="tm-info-comm">-</strong></div>
+    </div>
+  </div>
+</div>
+
+
+<script src="/static/js/api.js"></script>
+<script src="/static/js/views.js"></script>
+<script src="/static/js/modals.js"></script>
+<script src="/static/js/scout.js"></script>
+</body>
+</html>

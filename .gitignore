@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+football_platform.db
+.env
