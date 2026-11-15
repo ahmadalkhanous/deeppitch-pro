@@ -14,7 +14,7 @@ const BROWSER_CACHE = {
   fixtures: {},
   standings: {},
   scorers: {},
-  xpts: {},
+  
   projections: {},
   fdr: {}
 };

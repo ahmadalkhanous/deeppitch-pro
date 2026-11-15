@@ -12,6 +12,10 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+import numpy as np
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List, Dict, Optional
 
 import database as db
 
@@ -699,9 +703,227 @@ def get_ai_matchweek_newspaper(league_code: str):
             "content": "جاري تجهيز مقالات وتحليلات الجولة من غرفة الأخبار الرياضية..."
         }
 
-    @app.get("/api/match_lineups/{league_code}/{match_id}")
-    def get_match_lineups_route(league_code: str, match_id: str):
-     data = db.get_match_lineups(league_code, match_id)
+
+@app.get("/api/match_lineups/{league_code}/{match_id}")
+def get_match_lineups_route(league_code: str, match_id: str):
+    data = db.get_match_lineups(league_code, match_id)
     if not data:
         return {"has_lineups": False}
-    return data  
+    return data
+
+
+@app.get("/api/match_events/{league_code}/{match_id}")
+def get_match_events_route(league_code: str, match_id: str):
+    try:
+        if hasattr(db, "get_match_events"):
+            data = db.get_match_events(league_code, match_id)
+            if data:
+                return data
+        return {"has_events": False, "events": []}
+    except Exception as e:
+        return {"has_events": False, "events": [], "message": str(e)}
+
+
+    # =========================================================================
+# مسار أرشيف وتاريخ الدوريات (مربوط بقاعدة البيانات الرسمية و ESPN)
+# =========================================================================
+@app.get("/api/league_history/{league_code}")
+def get_league_history_route(league_code: str):
+    try:
+        data = db.get_league_full_history(league_code.upper())
+        if data:
+            return {"status": "success", "data": data}
+        return {"status": "error", "message": "تعذر العثور على بيانات الدوري"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+    # =========================================================================
+# مسارات استوديو المقارنة الرادارية ومحاكي القمم (Radar Clash Studio API)
+# =========================================================================
+
+class RadarClashRequest(BaseModel):
+    league_a: str = "PD"
+    team_a_short: str = ""
+    league_b: str = "PL"
+    team_b_short: str = ""
+    venue: str = "neutral"  # neutral | home_a | home_b
+
+
+@app.get("/api/radar_teams/{league_code}")
+def get_radar_teams_route(league_code: str):
+    try:
+        teams = db.get_radar_teams_for_league(league_code.upper())
+        return {"status": "success", "league_code": league_code.upper(), "teams": teams}
+    except Exception as e:
+        return {"status": "error", "teams": [], "message": str(e)}
+
+
+@app.post("/api/radar_clash")
+def simulate_radar_clash(req: RadarClashRequest):
+    try:
+        teams_a = db.get_radar_teams_for_league(req.league_a.upper())
+        teams_b = db.get_radar_teams_for_league(req.league_b.upper())
+
+        if not teams_a or not teams_b:
+            return {"status": "error", "message": "تعذر جلب بيانات الأندية للمقارنة"}
+
+        def find_club(t_list, query_name, default_idx=0):
+            if query_name:
+                q = query_name.strip().lower()
+                for item in t_list:
+                    if item["short"].lower() == q or item["name"].lower() == q:
+                        return item
+                for item in t_list:
+                    if q in item["short"].lower() or q in item["name"].lower():
+                        return item
+            return t_list[min(default_idx, len(t_list) - 1)]
+
+        club_a = find_club(teams_a, req.team_a_short, 0)
+        club_b = find_club(teams_b, req.team_b_short, 1 if req.league_a.upper() == req.league_b.upper() else 0)
+
+        # ضبط معامل الأرض بحسب اختيار المستخدم (أرض محايدة أو ملعب أحد الفريقين)
+        if req.venue == "home_a":
+            sim = compute_fixture_probabilities(
+                home_att=club_a["att"], home_def=club_a["def"],
+                away_att=club_b["att"], away_def=club_b["def"],
+                home_elo=club_a["elo"], away_elo=club_b["elo"],
+                home_adv_mult=1.22
+            )
+            prob_a, prob_draw, prob_b = sim["prob_home"], sim["prob_draw"], sim["prob_away"]
+            xg_a, xg_b = sim["xg_home"], sim["xg_away"]
+            pred_score = sim["most_likely_score"]
+            heatmap = sim["heatmap"]
+        elif req.venue == "home_b":
+            sim = compute_fixture_probabilities(
+                home_att=club_b["att"], home_def=club_b["def"],
+                away_att=club_a["att"], away_def=club_a["def"],
+                home_elo=club_b["elo"], away_elo=club_a["elo"],
+                home_adv_mult=1.22
+            )
+            prob_a, prob_draw, prob_b = sim["prob_away"], sim["prob_draw"], sim["prob_home"]
+            xg_a, xg_b = sim["xg_away"], sim["xg_home"]
+            parts = sim["most_likely_score"].split(" - ")
+            pred_score = f"{parts[1]} - {parts[0]}" if len(parts) == 2 else sim["most_likely_score"]
+            heatmap = [[sim["heatmap"][a][h] for a in range(5)] for h in range(5)]
+        else:
+            # أرض محايدة (بدون أفضلية ملعب)
+            sim = compute_fixture_probabilities(
+                home_att=club_a["att"], home_def=club_a["def"],
+                away_att=club_b["att"], away_def=club_b["def"],
+                home_elo=club_a["elo"] - 50.0, away_elo=club_b["elo"],
+                home_adv_mult=1.04
+            )
+            prob_a, prob_draw, prob_b = sim["prob_home"], sim["prob_draw"], sim["prob_away"]
+            xg_a, xg_b = sim["xg_home"], sim["xg_away"]
+            pred_score = sim["most_likely_score"]
+            heatmap = sim["heatmap"]
+
+        # توليد قراءة تكتيكية ذكية تقارن محاور الرادار الستة
+        ra, rb = club_a["radar"], club_b["radar"]
+        adv_a, adv_b = [], []
+        axis_names = {
+            "attack": "الفاعلية الهجومية",
+            "defense": "الصلابة الدفاعية",
+            "elo": "التصنيف التراكمي (Elo)",
+            "form": "الفورمة والزخم الحالي",
+            "finishing": "الحسم التهديفي",
+            "dominance": "الهيمنة ونسبة الانتصار"
+        }
+        for k, label in axis_names.items():
+            if ra[k] - rb[k] >= 4:
+                adv_a.append(label)
+            elif rb[k] - ra[k] >= 4:
+                adv_b.append(label)
+
+        verdict_parts = []
+        if adv_a:
+            verdict_parts.append(f"يتفوق **{club_a['short']}** رادارياً في ({'، '.join(adv_a[:3])})")
+        if adv_b:
+            verdict_parts.append(f"يمتلك **{club_b['short']}** الأفضلية في ({'، '.join(adv_b[:3])})")
+        if not verdict_parts:
+            verdict_parts.append("تطابق تكتيكي مذهل بين الفريقين في أغلب محاور اللعب الستة")
+
+        winner_side = club_a["short"] if prob_a >= prob_b else club_b["short"]
+        max_win_prob = max(prob_a, prob_b)
+        tactical_summary = "، بينما ".join(verdict_parts) + f". ترجح النمذجة كفة **{winner_side}** بنسبة **{max_win_prob}%** مع أهداف متوقعة (**{xg_a} مقابل {xg_b}**)."
+
+        return {
+            "status": "success",
+            "team_a": club_a,
+            "team_b": club_b,
+            "venue": req.venue,
+            "simulation": {
+                "prob_a": prob_a,
+                "prob_draw": prob_draw,
+                "prob_b": prob_b,
+                "xg_a": xg_a,
+                "xg_b": xg_b,
+                "predicted_score": pred_score,
+                "score_prob": sim["score_prob"],
+                "markets": sim["markets"],
+                "heatmap": heatmap,
+                "tactical_summary": tactical_summary
+            }
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+        # =========================================================================
+# مسار منحنى الزخم الهجومي الحي وخريطة التسديدات (Attack Momentum API)
+# =========================================================================
+@app.get("/api/match_momentum/{league_code}/{match_id}")
+def get_match_momentum_route(league_code: str, match_id: str):
+    try:
+        data = db.get_match_momentum(league_code.upper(), match_id)
+        return {"status": "success", "data": data}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+        # =========================================================================
+# مسار بورصة الانتقالات وتجديد العقود (Mercato & Contract Renewals API)
+# =========================================================================
+@app.get("/api/mercato")
+def get_mercato_and_contracts_route(refresh: bool = False):
+    try:
+        data = db.get_mercato_and_contracts_data(force_refresh=refresh)
+        return {
+            "status": "success",
+            "transfers": data.get("transfers", []),
+            "contracts": data.get("contracts", []),
+            "ticker": data.get("ticker", [])
+        }
+    except Exception as e:
+        return {"status": "error", "transfers": [], "contracts": [], "ticker": [], "message": str(e)}
+
+   # =========================================================================
+# مسار ساحة التحدي الكروي الذكي (AI + Context-Aware Live APIs - 6 Rich Categories)
+# =========================================================================
+@app.get("/api/quiz_bank")
+def get_quiz_arena_bank_route(
+    league: str = "ALL",
+    difficulty: str = "ALL",
+    region: str = "ALL",
+    category: str = "ALL",
+    seed: str = "",
+    use_ai: bool = False,
+    count: int = 120
+):
+    try:
+        data = db.get_quiz_arena_bank(
+            league_filter=league,
+            difficulty_filter=difficulty,
+            region_filter=region,
+            category_filter=category,
+            seed_code=seed,
+            use_ai=use_ai,
+            batch_size=count
+        )
+        return {
+            "status": "success",
+            "total_pool_size": data.get("total_pool_size", 2800),
+            "category_counts": data.get("category_counts", {}),
+            "questions": data.get("questions", []),
+            "seed_code": data.get("seed_code", "")
+        }
+    except Exception as e:
+        return {"status": "error", "questions": [], "message": str(e)}
