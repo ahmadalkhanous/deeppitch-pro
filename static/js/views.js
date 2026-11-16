@@ -324,11 +324,11 @@ function goBackToMainMenu() {
   window.scrollTo(0, 0);
 }
 
-function refreshCurrentView() {
+function refreshCurrentView(forceRefresh = true) {
   const league = (typeof activeLeague !== 'undefined' && activeLeague) ? activeLeague : 'PL';
   const sec = window.activeSection || (typeof activeSection !== 'undefined' ? activeSection : 'fixtures');
 
-  if (sec === 'fixtures') loadGameweek(league);
+  if (sec === 'fixtures') loadGameweek(league, forceRefresh);
   else if (sec === 'standings') loadOfficialStandingsAndScorers(league);
   else if (sec === 'projections') loadProjections(league);
   else if (sec === 'fdr') loadFDR(league);
@@ -410,11 +410,11 @@ function renderFixturesList(fixtures) {
   `).join('');
 }
 
-async function loadGameweek(leagueCode) {
+async function loadGameweek(leagueCode, forceRefresh = false) {
   const container = document.getElementById('fixtures-container');
   if (!container) return;
 
-  if (typeof BROWSER_CACHE !== 'undefined' && BROWSER_CACHE.fixtures && BROWSER_CACHE.fixtures[leagueCode] && BROWSER_CACHE.fixtures[leagueCode].length > 0) {
+  if (!forceRefresh && typeof BROWSER_CACHE !== 'undefined' && BROWSER_CACHE.fixtures && BROWSER_CACHE.fixtures[leagueCode] && BROWSER_CACHE.fixtures[leagueCode].length > 0) {
     window.currentFixtures = BROWSER_CACHE.fixtures[leagueCode];
     renderFixturesList(window.currentFixtures);
     return;
@@ -4122,7 +4122,8 @@ function renderQuizPostMatchSummary() {
         if (!tabObj) return;
 
         // البحث عن بطاقة البوابة المطابقة وتشغيلها
-        const portalCards = Array.from(document.querySelectorAll('.nav-card, .portal-card, [onclick]'));
+        // البحث عن بطاقة البوابة المطابقة وتشغيلها مباشرة
+        const portalCards = Array.from(document.querySelectorAll('.hub-card, .nav-card, .portal-card'));
         const matchedCard = portalCards.find(el => {
           const txt = el.textContent || '';
           return tabObj.keywords.some(kw => txt.includes(kw)) && !el.closest('#dp-bottom-nav');

@@ -5,18 +5,20 @@ import hashlib
 import threading
 import urllib.request
 from datetime import datetime, timedelta
-import numpy as np
-from scipy.stats import poisson
-from pydantic import BaseModel
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from typing import List, Dict, Optional
 import numpy as np
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+
 import database as db
+from engine import (
+    compute_fixture_probabilities,
+    evaluate_tactical_edge,
+    generate_h2h_history
+)
 
 app = FastAPI(title="DeepPitch Multi-League Analytics Platform")
 
@@ -240,15 +242,10 @@ def serve_dashboard():
 
 @app.get("/sw.js")
 def serve_service_worker():
-    sw_code = """
-self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
-self.addEventListener('notificationclick', (event) => {
-    event.notification.close();
-    event.waitUntil(clients.openWindow('/'));
-});
-"""
-    return Response(content=sw_code.strip(), media_type="application/javascript")
+    if os.path.exists("sw.js"):
+        return FileResponse("sw.js", media_type="application/javascript")
+    return Response(content="self.addEventListener('install', () => self.skipWaiting());", media_type="application/javascript")
+
 
 @app.get("/static/manifest.json")
 def manifest_file():
@@ -273,16 +270,18 @@ def get_gameweek_predictions(league_code: str):
 
     results = []
     for f in fixtures:
-        stats = compute_fixture_probabilities(
+       stats = compute_fixture_probabilities(
             home_att=f["home_attack"],
             home_def=f["home_defense"],
             away_att=f["away_attack"],
             away_def=f["away_defense"],
             home_elo=f["home_elo"],
-            away_elo=f["away_elo"]
+            away_elo=f["away_elo"],
+            home_form=f.get("home_form"),
+            away_form=f.get("away_form")
         )
 
-        edge_data = evaluate_tactical_edge(
+    edge_data = evaluate_tactical_edge(
             home_short=f["home_short"],
             away_short=f["away_short"],
             home_elo=f["home_elo"],
@@ -294,11 +293,11 @@ def get_gameweek_predictions(league_code: str):
             xg_away=stats["xg_away"]
         )
 
-        h2h_data = generate_h2h_history(
+    h2h_data = generate_h2h_history(
             f["home_short"], f["away_short"], f["home_elo"], f["away_elo"]
         )
 
-        results.append({
+    results.append({
             "fixture_id": f["fixture_id"],
             "gameweek": f["gameweek"],
             "kickoff_time": f["kickoff_time"],

@@ -57,7 +57,7 @@ async function selectLeague(code) {
   document.querySelectorAll('.league-btn').forEach(btn => {
     btn.classList.toggle('active', btn.getAttribute('data-league') === code);
   });
-  await refreshCurrentView();
+  await refreshCurrentView(false); // يستفيد من الكاش عند التنقل العادي، ويحدث من السيرفر عند ضغط زر التحديث
 }
 
 // تهيئة التطبيق عند اكتمال تحميل الصفحة

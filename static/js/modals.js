@@ -147,18 +147,8 @@ async function loadMatchMomentum(requestedPhase) {
     if (!studio.has_studio) {
       container.innerHTML =
         phaseTabsHtml +
-        '<div style="background:#0c121e; border:1px dashed var(--card-border); border-radius:14px; padding:26px 16px; text-align:center;">' +
-          '<div style="font-size:1.8rem; margin-bottom:8px;">🔒</div>' +
-          '<div style="color:var(--accent-gold); font-weight:900; font-size:0.9rem; line-height:1.7;">' + (studio.message || 'هذه المرحلة لم تبدأ بعد.') + '</div>' +
-        '</div>';
-      return;
-    }
-    // إذا طلب المستخدم مرحلة لم تبدأ بعد على أرض الواقع (مثلاً بعد النهاية والمباراة لم تلعب بعد)
-    if (!studio.has_studio) {
-      container.innerHTML =
-        phaseTabsHtml +
         '<div style="background:#0c121e; border:1px dashed var(--accent-gold); border-radius:14px; padding:26px 16px; text-align:center;">' +
-          '<div style="font-size:1.8rem; margin-bottom:8px;">⏳</div>' +
+          '<div style="font-size:1.8rem; margin-bottom:8px;">🔒</div>' +
           '<div style="color:var(--accent-gold); font-weight:900; font-size:0.9rem; line-height:1.7;">' + (studio.message || 'هذه المرحلة ستتوفر فور انطلاق المباراة.') + '</div>' +
           '<button type="button" class="ai-btn" onclick="switchStudioPhase(\'pre\')" style="margin-top:12px;">📋 العودة لاستوديو ما قبل المباراة</button>' +
         '</div>';

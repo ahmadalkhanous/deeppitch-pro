@@ -80,8 +80,29 @@ LEAGUE_RULES = {
         "rel_playoff": [],
         "rel": list(range(25, 37)),        # 25-36 إقصاء وخروج من البطولة
         "legend": {"ucl": "تأهل مباشر لـ 16 (1-8)", "uel": "ملحق الإقصائيات (9-24)", "rel": "إقصاء مبكر (25-36)"},
+     
         "proj_headers": {"champ": "صدارة الترتيب 🥇", "top": "تأهل مباشر (Top 8) ⚡", "rel": "خطر الإقصاء ❌"}
+    },
+    "ACL": {
+        "total_games": 8, "is_ucl": False,
+        "ucl": list(range(1, 9)), "uel": [], "rel_playoff": [], "rel": [9, 10, 11, 12],
+        "legend": {"ucl": "ثمن النهائي (1-8)", "uel": "", "rel": "إقصاء مباشر (9-12)"},
+        "proj_headers": {"champ": "بطل آسيا 🏆", "top": "ثمن النهائي (1-8) 🌏", "rel": "إقصاء (9-12) ❌"}
+    },
+    "CAF": {
+        "total_games": 6, "is_ucl": False,
+        "ucl": [1, 2], "uel": [], "rel_playoff": [], "rel": [3, 4],
+        "legend": {"ucl": "ربع النهائي (1-2)", "uel": "", "rel": "إقصاء مباشر (3-4)"},
+        "proj_headers": {"champ": "بطل أفريقيا 🏆", "top": "ربع النهائي (1-2) 🌍", "rel": "إقصاء (3-4) ❌"}
+    },
+    "UNL": {
+        "total_games": 6, "is_ucl": False,
+        "ucl": [1, 2], "uel": [3], "rel_playoff": [], "rel": [4],
+        "legend": {"ucl": "ربع النهائي / صعود", "uel": "ملحق البقاء/الصعود", "rel": "هبوط للمستوى الأدنى"},
+        "proj_headers": {"champ": "بطل المستوى A 🏆", "top": "ربع النهائي / صعود ⬆️", "rel": "هبوط 🔻"}
     }
+
+    
 }
 
 def get_league_rules(league_code: str) -> dict:
