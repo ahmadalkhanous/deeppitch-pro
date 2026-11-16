@@ -3605,3 +3605,223 @@ function renderQuizPostMatchSummary() {
     </div>
   `;
 }
+
+
+// =========================================================
+// 13. محرك توافق الجوال والسكرول العرضي الشامل (Mobile UX & Horizontal Scroll Engine)
+// =========================================================
+(function initDeepPitchMobileUX() {
+  function injectMobileMasterStyles() {
+    if (document.getElementById('dp-mobile-master-css')) return;
+    const style = document.createElement('style');
+    style.id = 'dp-mobile-master-css';
+    style.innerHTML = `
+      /* شريط السكرول العرضي القياسي لجميع الفلاتر والأزرار */
+      .dp-h-scroll-bar {
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+        justify-content: flex-start !important;
+        gap: 8px !important;
+        width: 100% !important;
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+        padding: 5px 4px 9px 4px !important;
+        -webkit-overflow-scrolling: touch !important;
+        scroll-snap-type: x proximity !important;
+        scrollbar-width: thin !important;
+        scrollbar-color: rgba(0, 230, 118, 0.35) transparent !important;
+      }
+      .dp-h-scroll-bar::-webkit-scrollbar { height: 4px !important; }
+      .dp-h-scroll-bar::-webkit-scrollbar-thumb {
+        background: rgba(0, 230, 118, 0.4) !important;
+        border-radius: 99px !important;
+      }
+      .dp-h-scroll-bar > * {
+        flex: 0 0 auto !important;
+        white-space: nowrap !important;
+        scroll-snap-align: start !important;
+      }
+
+      /* شريط الدوريات في جميع الأقسام */
+      #leagues-bar,
+      #standings-leagues-bar,
+      #sim-leagues-bar,
+      #fdr-leagues-bar,
+      #history-leagues-bar,
+      #radar-leagues-bar,
+      .leagues-bar,
+      .league-tabs {
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        justify-content: flex-start !important;
+        gap: 8px !important;
+        padding: 8px 10px !important;
+        -webkit-overflow-scrolling: touch !important;
+        scrollbar-width: none !important;
+      }
+      #leagues-bar::-webkit-scrollbar,
+      .leagues-bar::-webkit-scrollbar { display: none !important; }
+      #leagues-bar > *,
+      .leagues-bar > * {
+        flex: 0 0 auto !important;
+        white-space: nowrap !important;
+      }
+
+      /* تحسينات شاشات الجوال الشخصية */
+      @media (max-width: 768px) {
+        .container {
+          padding: 10px 8px !important;
+        }
+
+        /* الصفحة الرئيسية: عرض البوابات الـ 10 في عمودين متجاورين بدلاً من عمود طويل */
+        .nav-grid,
+        .portal-grid,
+        #main-menu-grid {
+          display: grid !important;
+          grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+          gap: 10px !important;
+        }
+        .nav-card,
+        .portal-card {
+          padding: 12px 10px !important;
+          border-radius: 16px !important;
+        }
+        .nav-card h3,
+        .portal-card h3 {
+          font-size: 0.88rem !important;
+        }
+        .nav-card p,
+        .portal-card p {
+          font-size: 0.68rem !important;
+          line-height: 1.35 !important;
+        }
+
+        /* هيدر الأقسام الفرعية (عنوان القسم + زر العودة للرئيسية في سطر واحد) */
+        .view-header,
+        .section-header-bar {
+          display: flex !important;
+          flex-direction: row !important;
+          justify-content: space-between !important;
+          align-items: center !important;
+          flex-wrap: nowrap !important;
+          padding: 10px 12px !important;
+          gap: 8px !important;
+        }
+        .view-header h2 {
+          font-size: 0.95rem !important;
+          white-space: nowrap !important;
+          overflow: hidden !important;
+          text-overflow: ellipsis !important;
+          margin: 0 !important;
+        }
+
+        /* بطاقتا التبديل في الميركاتو (انتقالات اللاعبين / تجديد العقود) في سكرول أفقي مضغوط */
+        .dp-mercato-tabs-row {
+          display: flex !important;
+          flex-direction: row !important;
+          flex-wrap: nowrap !important;
+          overflow-x: auto !important;
+          gap: 8px !important;
+          padding-bottom: 6px !important;
+        }
+        .dp-mercato-tabs-row > div {
+          flex: 0 0 82% !important;
+          padding: 10px 12px !important;
+        }
+        .dp-mercato-tabs-row p,
+        .dp-mercato-tabs-row small {
+          font-size: 0.66rem !important;
+          white-space: nowrap !important;
+          overflow: hidden !important;
+          text-overflow: ellipsis !important;
+        }
+
+        /* تصغير زر مستشار الفانتازي العائم على الجوال حتى لا يغطي المحتوى */
+        #fantasy-fab,
+        .fantasy-fab,
+        .floating-ai-btn,
+        button[onclick*="Fantasy"],
+        button[onclick*="fantasy"] {
+          padding: 8px 13px !important;
+          font-size: 0.76rem !important;
+          bottom: 12px !important;
+          left: 12px !important;
+          border-radius: 99px !important;
+          box-shadow: 0 4px 14px rgba(0, 210, 255, 0.35) !important;
+        }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function applyHorizontalScrollUpgrades() {
+    // 1. صفحة مباريات الجولة: شريط (تذكرة الحسم + صحيفة الجولة + تحديث البيانات)
+    const allButtons = Array.from(document.querySelectorAll('button'));
+    const ticketBtn = allButtons.find(b => b.textContent && (b.textContent.includes('تذكرة الحسم') || b.textContent.includes('صحيفة الجولة')));
+    if (ticketBtn && ticketBtn.parentElement) {
+      const actionRow = ticketBtn.parentElement;
+      if (!actionRow.classList.contains('dp-h-scroll-bar')) {
+        actionRow.classList.add('dp-h-scroll-bar');
+      }
+    }
+
+    // 2. صفحة الميركاتو والعقود: تبويبات الانتقالات/العقود + فلاتر القارات + فلاتر نوع الصفقة
+    const worldBtn = allButtons.find(b => b.textContent && b.textContent.includes('كل أندية العالم'));
+    if (worldBtn) {
+      const regionRow = worldBtn.parentElement;
+      if (regionRow) {
+        // إذا كان حقل البحث داخل نفس السطر مع أزرار القارات، نفصله في الأعلى ليأخذ عرضاً كاملاً أنيقاً
+        const searchInput = regionRow.parentElement ? regionRow.parentElement.querySelector('input[type="text"], input[placeholder*="ابحث"]') : null;
+        if (searchInput && searchInput.parentElement === regionRow) {
+          const parentCard = regionRow.parentElement;
+          const searchWrap = document.createElement('div');
+          searchWrap.style.cssText = 'width:100%; margin-bottom:8px;';
+          searchInput.style.cssText += ';width:100% !important; max-width:100% !important; box-sizing:border-box !important;';
+          searchWrap.appendChild(searchInput);
+          parentCard.insertBefore(searchWrap, regionRow);
+        } else if (searchInput && searchInput.parentElement && searchInput.parentElement.parentElement === regionRow.parentElement) {
+          // إذا كان البحث وأزرار القارات في صف واحد متجاور (flex-between) نحولهما لعمود فوق بعض
+          const combinedRow = regionRow.parentElement;
+          combinedRow.style.flexDirection = 'column';
+          combinedRow.style.alignItems = 'stretch';
+          combinedRow.style.gap = '8px';
+          searchInput.style.width = '100%';
+        }
+        regionRow.classList.add('dp-h-scroll-bar');
+      }
+    }
+
+    // شريط نوع وحالة الصفقة (تمت رسمياً، مفاوضات جارية، صفقات فشلت، إشاعات، مدربون)
+    const doneDealBtn = allButtons.find(b => b.textContent && b.textContent.includes('تمت رسمياً') && b.textContent.length < 25);
+    if (doneDealBtn && doneDealBtn.parentElement) {
+      doneDealBtn.parentElement.classList.add('dp-h-scroll-bar');
+    }
+
+    // بطاقتا التبديل العلويتان في الميركاتو (1. انتقالات اللاعبين / 2. تجديد عقود اللاعبين)
+    const allDivs = Array.from(document.querySelectorAll('#mercato-view div, #mercato-container div'));
+    const tab1Div = allDivs.find(d => d.textContent && d.textContent.includes('1. انتقالات اللاعبين') && d.children.length <= 4);
+    if (tab1Div && tab1Div.parentElement) {
+      tab1Div.parentElement.classList.add('dp-mercato-tabs-row');
+    }
+  }
+
+  // تشغيل فوري ومراقبة أي تحديث ديناميكي في الصفحة
+  injectMobileMasterStyles();
+  applyHorizontalScrollUpgrades();
+
+  const observer = new MutationObserver(() => {
+    applyHorizontalScrollUpgrades();
+  });
+
+  if (document.body) {
+    observer.observe(document.body, { childList: true, subtree: true });
+  } else {
+    window.addEventListener('DOMContentLoaded', () => {
+      applyHorizontalScrollUpgrades();
+      observer.observe(document.body, { childList: true, subtree: true });
+    });
+  }
+})();
