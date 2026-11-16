@@ -409,7 +409,7 @@ def get_safe_accumulator(league_code: str):
         "joint_probability": round(float(joint_prob * 100.0), 1)
     }
 
-
+@app.get("/api/today_matches")
 @app.get("/api/todays_matches")
 def get_todays_matches():
     now_ts = time.time()
@@ -946,3 +946,43 @@ def get_quiz_arena_bank_route(
         }
     except Exception as e:
         return {"status": "error", "questions": [], "message": str(e)}
+
+
+        # =========================================================================
+# مسارات غرفة المحللين الأذكياء (AI Pundit Studio API - Pre / Half-Time / Post-Match)
+# =========================================================================
+
+class StudioAskRequest(BaseModel):
+    league_code: str = "PL"
+    match_id: str
+    pundit_id: str = "tactician"
+    question: str
+
+
+@app.get("/api/ai_studio/{league_code}/{match_id}")
+def get_ai_pundit_studio_route(league_code: str, match_id: str, phase: str = "auto"):
+    """جلب الاستوديو التحليلي للمباراة (4 محللين ببيانات حقيقية 100% + Gemini AI)"""
+    try:
+        data = db.get_ai_pundit_studio_analysis(
+            league_code=league_code.upper(),
+            match_id=match_id,
+            requested_phase=phase.lower()
+        )
+        return {"status": "success", "data": data}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/ai_studio_ask")
+def ask_studio_pundit_route(req: StudioAskRequest):
+    """توجيه سؤال مباشر من المشاهد لأحد المحللين الأربعة في الاستوديو"""
+    try:
+        res = db.ask_studio_pundit_question(
+            league_code=req.league_code.upper(),
+            match_id=req.match_id,
+            pundit_id=req.pundit_id,
+            question=req.question
+        )
+        return {"status": "success", "data": res}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}

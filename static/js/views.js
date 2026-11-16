@@ -495,8 +495,8 @@ async function loadTodayMatches() {
           <div style="grid-column: 1/-1;">🎙️ <strong>المعلق:</strong> ${m.commentator}</div>
         </div>
 
-        <div style="text-align:center; font-size:0.75rem; color:var(--accent-cyan); margin-top:10px; border-top:1px dashed #1e293b; padding-top:8px;">
-          📊 انقر لمشاهدة إحصائيات المباراة وتفاصيل اللقاء
+       <div style="text-align:center; font-size:0.75rem; color:var(--accent-gold); font-weight:800; margin-top:10px; border-top:1px dashed #1e293b; padding-top:8px;">
+          🎙️ انقر لدخول استوديو المحللين الأربعة والإحصائيات والتشكيلة
         </div>
       </div>
     `).join('');
@@ -3673,7 +3673,25 @@ function renderQuizPostMatchSummary() {
       }
 
       /* شريط السكرول العرضي القياسي لجميع الفلاتر والأزرار */
+      /* شريط السكرول العرضي القياسي لجميع الفلاتر والأزرار */
       .dp-h-scroll-bar {
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+        gap: 10px !important;
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+        -webkit-overflow-scrolling: touch !important;
+        padding-bottom: 6px !important;
+        scrollbar-width: thin !important;
+        scrollbar-color: rgba(0, 230, 118, 0.4) transparent !important;
+      }
+      @media (min-width: 769px) {
+        #smart-tools-bar {
+          justify-content: center !important;
+        }
+      }
       .dp-h-scroll-bar::-webkit-scrollbar { height: 4px !important; }
       .dp-h-scroll-bar::-webkit-scrollbar-thumb {
         background: rgba(0, 230, 118, 0.4) !important;

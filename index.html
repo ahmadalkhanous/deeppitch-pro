@@ -163,13 +163,14 @@
     <p>انقر على أي من البطاقات الـ 9 أعلاه لاستعراض توقعات المباريات، النتائج المباشرة، جداول الترتيب، محاكاة مونت كارلو، الأرشيف التاريخي، أو بورصة الانتقالات.</p>
   </div>
 
+  
   <!-- شريط اختيار الدوريات وأزرار الأدوات الذكية -->
   <div id="main-menu-section" style="display: none;">
     <div id="league-bar" class="league-bar"></div>
-    <div style="display:flex; justify-content:center; gap:10px; flex-wrap:wrap; margin-bottom:20px;">
-      <button class="ai-btn" onclick="openSafeAccumulator()">🎯 تذكرة الحسم الإحصائي</button>
-      <button class="newspaper-btn" onclick="openAiNewspaper()">🗞️ صحيفة الجولة الذكية (AI Gazette)</button>
-      <button class="retry-btn" onclick="refreshCurrentView()">تحديث البيانات ↻</button>
+    <div id="smart-tools-bar" class="dp-h-scroll-bar" style="display:flex; flex-direction:row; flex-wrap:nowrap; align-items:center; justify-content:flex-start; gap:10px; width:100%; max-width:960px; margin:0 auto 18px auto; padding:6px 10px; overflow-x:auto; -webkit-overflow-scrolling:touch;">
+      <button class="ai-btn" onclick="openSafeAccumulator()" style="flex:0 0 auto; white-space:nowrap;">🎯 تذكرة الحسم الإحصائي</button>
+      <button class="newspaper-btn" onclick="openAiNewspaper()" style="flex:0 0 auto; white-space:nowrap;">🗞️ صحيفة الجولة الذكية (AI Gazette)</button>
+      <button class="retry-btn" onclick="refreshCurrentView()" style="flex:0 0 auto; white-space:nowrap;">تحديث البيانات ↻</button>
     </div>
   </div>
 
@@ -551,8 +552,8 @@
       <button id="btn-tab-stats" class="league-btn active" onclick="switchMatchTab('stats')" style="flex:1; min-width:110px; justify-content:center; padding:7px 8px; font-size:0.8rem;">
         📊 الإحصائيات
       </button>
-      <button id="btn-tab-momentum" class="league-btn" onclick="switchMatchTab('momentum')" style="flex:1; min-width:110px; justify-content:center; padding:7px 8px; font-size:0.8rem;">
-        📈 الزخم والتسديدات
+     <button id="btn-tab-momentum" class="league-btn" onclick="switchMatchTab('momentum')" style="flex:1; min-width:110px; justify-content:center; padding:7px 8px; font-size:0.8rem;">
+        🎙️ استوديو المحللين
       </button>
       <button id="btn-tab-events" class="league-btn" onclick="switchMatchTab('events')" style="flex:1; min-width:110px; justify-content:center; padding:7px 8px; font-size:0.8rem;">
         ⏱️ مجريات اللقاء
@@ -686,7 +687,7 @@
     </div>
 
     <div id="tm-momentum-tab" style="display:none;">
-      <div id="tm-momentum-content"></div>
+      <div id="tm-momentum-content" class="ai-studio-wrapper"></div>
     </div>
 
     <div id="tm-lineup-tab" style="display:none;">

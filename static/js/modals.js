@@ -74,132 +74,221 @@ window.switchMatchTab = function(tab) {
 };
 
 // =========================================================
-// 2. محرك الزخم الهجومي وخريطة التسديدات داخل نافذة المباراة
+// 2. محرك غرفة المحللين الأذكياء (AI Pundit Studio - Pre / Live / Post-Match)
 // =========================================================
-async function loadMatchMomentum() {
+window.currentStudioPhase = 'auto';
+
+window.switchStudioPhase = function(phaseKey) {
+  window.currentStudioPhase = phaseKey;
+  loadMatchMomentum(phaseKey);
+};
+
+async function loadMatchMomentum(requestedPhase) {
   var container = document.getElementById('tm-momentum-content');
   var m = window.activeMatchModalData;
   if (!container || !m) return;
 
-  if (m.state === 'pre' && !m.is_live) {
-    container.innerHTML =
-      '<div style="background:#0c121e; border:1px dashed var(--card-border); border-radius:12px; padding:28px 16px; text-align:center; color:var(--accent-gold); font-size:0.86rem; line-height:1.7;">' +
-        '⏳ <strong>لم تبدأ المباراة بعد</strong><br>' +
-        '<span style="color:var(--muted); font-size:0.8rem;">سيتوفر منحنى الزخم الهجومي الحي وخريطة التسديدات فور انطلاق صافرة البداية.</span>' +
+  var phaseToLoad = requestedPhase || 'auto';
+
+  container.innerHTML =
+    '<div class="loading-state" style="padding:32px 12px;">' +
+      '<div style="font-size:1.6rem; margin-bottom:8px;">🎙️</div>' +
+      '<div style="color:var(--accent-gold); font-weight:900; font-size:0.95rem;">جاري الاتصال بغرفة المحللين الأذكياء...</div>' +
+      '<div style="color:var(--muted); font-size:0.78rem; margin-top:4px;">يتم الآن سحب أرقام المباراة الحقيقية والتشكيلات وتجهيز قراءة المحللين الأربعة</div>' +
+    '</div>';
+
+  try {
+    var leagueCode = m.league_code || 'PL';
+    var res = await fetch('/api/ai_studio/' + encodeURIComponent(leagueCode) + '/' + encodeURIComponent(m.id) + '?phase=' + encodeURIComponent(phaseToLoad));
+    var resJson = await res.json();
+    var studio = (resJson && resJson.data) ? resJson.data : null;
+
+    if (!studio) {
+      throw new Error('No studio data');
+    }
+
+    var actualState = studio.actual_state || m.state || 'pre';
+    var activePhase = studio.phase || (actualState === 'post' ? 'post' : (actualState === 'in' ? 'in' : 'pre'));
+
+    // تحديد المراحل المتاحة فعلياً حسب حالة المباراة الحقيقية
+    var canViewIn = (actualState === 'in' || actualState === 'post');
+    var canViewPost = (actualState === 'post');
+
+    // شريط التبديل التراكمي بين مراحل الاستوديو الثلاث
+    var phaseTabsHtml =
+      '<div style="display:flex; gap:6px; background:#060a14; padding:6px; border-radius:14px; border:1px solid var(--card-border); margin-bottom:14px;">' +
+        // 1. زر قبل المباراة (متاح دائماً في كل الحالات)
+        '<button type="button" onclick="switchStudioPhase(\'pre\')" style="flex:1; padding:8px 6px; border-radius:10px; border:1px solid ' + (activePhase === 'pre' ? 'var(--accent-green)' : 'var(--card-border)') + '; background:' + (activePhase === 'pre' ? 'rgba(0,230,118,0.16)' : '#0c121e') + '; color:' + (activePhase === 'pre' ? 'var(--accent-green)' : '#cbd5e1') + '; font-weight:900; font-size:0.75rem; cursor:pointer; transition:all 0.2s;">' +
+          '📋 قبل المباراة' +
+        '</button>' +
+
+        // 2. زر بين الشوطين (يتفعل فقط عند بدء المباراة أو انتهائها)
+        (canViewIn
+          ? '<button type="button" onclick="switchStudioPhase(\'in\')" style="flex:1; padding:8px 6px; border-radius:10px; border:1px solid ' + (activePhase === 'in' ? 'var(--accent-gold)' : 'var(--card-border)') + '; background:' + (activePhase === 'in' ? 'rgba(255,214,0,0.16)' : '#0c121e') + '; color:' + (activePhase === 'in' ? 'var(--accent-gold)' : '#cbd5e1') + '; font-weight:900; font-size:0.75rem; cursor:pointer; transition:all 0.2s;">' +
+              '⏱️ بين الشوطين' +
+            '</button>'
+          : '<button type="button" disabled title="يتفعل بعد انطلاق المباراة" style="flex:1; padding:8px 6px; border-radius:10px; border:1px dashed #1e293b; background:rgba(15,23,42,0.4); color:#475569; font-weight:800; font-size:0.73rem; cursor:not-allowed; opacity:0.6;">' +
+              '🔒 بين الشوطين' +
+            '</button>'
+        ) +
+
+        // 3. زر بعد النهاية (يتفعل فقط بعد انتهاء المباراة رسمياً)
+        (canViewPost
+          ? '<button type="button" onclick="switchStudioPhase(\'post\')" style="flex:1; padding:8px 6px; border-radius:10px; border:1px solid ' + (activePhase === 'post' ? 'var(--accent-cyan)' : 'var(--card-border)') + '; background:' + (activePhase === 'post' ? 'rgba(0,210,255,0.16)' : '#0c121e') + '; color:' + (activePhase === 'post' ? 'var(--accent-cyan)' : '#cbd5e1') + '; font-weight:900; font-size:0.75rem; cursor:pointer; transition:all 0.2s;">' +
+              '🏁 بعد النهاية' +
+            '</button>'
+          : '<button type="button" disabled title="يتفعل بعد صافرة النهاية" style="flex:1; padding:8px 6px; border-radius:10px; border:1px dashed #1e293b; background:rgba(15,23,42,0.4); color:#475569; font-weight:800; font-size:0.73rem; cursor:not-allowed; opacity:0.6;">' +
+              '🔒 بعد النهاية' +
+            '</button>'
+        ) +
       '</div>';
-    return;
-  }
 
-  container.innerHTML = '<div class="loading-state" style="padding:30px 0;">⏳ جاري رسم منحنى الزخم الهجومي الدقيقة بدقيقة وخريطة التسديدات...</div>';
-
-  // 1. محاولة الجلب من الباك إند أولاً
-  try {
-    var res = await fetch('/api/match_momentum/' + (m.league_code || 'PL') + '/' + m.id);
-    if (res.ok) {
-      var resData = await res.json();
-      var momPayload = (resData && resData.data) ? resData.data : resData;
-      if (momPayload && momPayload.state === 'pre') {
-        container.innerHTML =
-          '<div style="background:#0c121e; border:1px dashed var(--card-border); border-radius:12px; padding:28px 16px; text-align:center; color:var(--accent-gold); font-size:0.86rem; line-height:1.7;">' +
-            '⏳ <strong>لم تبدأ المباراة بعد</strong><br>' +
-            '<span style="color:var(--muted); font-size:0.8rem;">' + (momPayload.message || 'سيتوفر منحنى الزخم الهجومي وخريطة التسديدات فور انطلاق صافرة البداية.') + '</span>' +
-          '</div>';
-        return;
-      }
-      if (momPayload && momPayload.has_momentum && typeof renderMomentumWidgetHtml === 'function') {
-        container.innerHTML = renderMomentumWidgetHtml('tm-mom', momPayload);
-        return;
-      }
+    // حماية إضافية في حال طُلبت مرحلة غير متاحة
+    if (!studio.has_studio) {
+      container.innerHTML =
+        phaseTabsHtml +
+        '<div style="background:#0c121e; border:1px dashed var(--card-border); border-radius:14px; padding:26px 16px; text-align:center;">' +
+          '<div style="font-size:1.8rem; margin-bottom:8px;">🔒</div>' +
+          '<div style="color:var(--accent-gold); font-weight:900; font-size:0.9rem; line-height:1.7;">' + (studio.message || 'هذه المرحلة لم تبدأ بعد.') + '</div>' +
+        '</div>';
+      return;
     }
-  } catch (e) {}
-
-  // 2. توليد فوري مباشر من إحصائيات وأحداث المباراة الحية لضمان العمل دائماً
-  try {
-    var fb = buildFallbackStatsFromMatch(m);
-    var st = (window.activeMatchStatsData && window.activeMatchStatsData.home) ? window.activeMatchStatsData : (m.stats || fb);
-    var hSt = st.home || fb.home;
-    var aSt = st.away || fb.away;
-
-    var posH = parseFloat(hSt.possession) || 50;
-    var shotsH = parseInt(hSt.shots, 10) || 8;
-    var shotsA = parseInt(aSt.shots, 10) || 7;
-    var sotH = parseInt(hSt.shots_on_target, 10) || 3;
-    var sotA = parseInt(aSt.shots_on_target, 10) || 3;
-
-    var baseTilt = ((posH - 50) * 0.8) + (((shotsH - shotsA) / Math.max(1, shotsH + shotsA)) * 30);
-    var seed = String(m.id || '100').split('').reduce(function(acc, ch) { return acc + ch.charCodeAt(0); }, 0);
-
-    var points = [];
-    var hDomCount = 0, aDomCount = 0;
-    for (var i = 0, min = 2; min <= 90; min += 2, i++) {
-      var wave = baseTilt + Math.sin((i * 0.5) + (seed % 7)) * 35 + Math.cos((i * 0.85) + (seed % 11)) * 22;
-      var val = Math.max(-95, Math.min(95, Math.round(wave)));
-      if (Math.abs(val) < 7) val = val >= 0 ? 9 : -9;
-      if (val >= 0) hDomCount++; else aDomCount++;
-      points.push({ minute: min, value: val, active: true });
+    // إذا طلب المستخدم مرحلة لم تبدأ بعد على أرض الواقع (مثلاً بعد النهاية والمباراة لم تلعب بعد)
+    if (!studio.has_studio) {
+      container.innerHTML =
+        phaseTabsHtml +
+        '<div style="background:#0c121e; border:1px dashed var(--accent-gold); border-radius:14px; padding:26px 16px; text-align:center;">' +
+          '<div style="font-size:1.8rem; margin-bottom:8px;">⏳</div>' +
+          '<div style="color:var(--accent-gold); font-weight:900; font-size:0.9rem; line-height:1.7;">' + (studio.message || 'هذه المرحلة ستتوفر فور انطلاق المباراة.') + '</div>' +
+          '<button type="button" class="ai-btn" onclick="switchStudioPhase(\'pre\')" style="margin-top:12px;">📋 العودة لاستوديو ما قبل المباراة</button>' +
+        '</div>';
+      return;
     }
 
-    var markers = [];
-    var hGoals = st.home_goals || fb.home_goals || [];
-    var aGoals = st.away_goals || fb.away_goals || [];
-
-    hGoals.forEach(function(gTxt, idx) {
-      var mMatch = String(gTxt).match(/(\d+)/);
-      var gMin = mMatch ? Math.min(90, Math.max(2, Math.round(parseInt(mMatch[1], 10) / 2) * 2)) : (18 + idx * 24);
-      markers.push({ minute: gMin, real_clock: gMin + "'", side: 'home', type: 'goal', icon: '⚽', label: gTxt });
-    });
-
-    aGoals.forEach(function(gTxt, idx) {
-      var mMatch = String(gTxt).match(/(\d+)/);
-      var gMin = mMatch ? Math.min(90, Math.max(2, Math.round(parseInt(mMatch[1], 10) / 2) * 2)) : (26 + idx * 28);
-      markers.push({ minute: gMin, real_clock: gMin + "'", side: 'away', type: 'goal', icon: '⚽', label: gTxt });
-    });
-
-    var shotsMap = [];
-    function pushTeamShots(side, totalSh, sotCnt, goalsArr, tName) {
-      var gCnt = goalsArr.length;
-      var onT = Math.max(0, sotCnt - gCnt);
-      var offT = Math.max(0, Math.min(8, totalSh - gCnt - onT));
-      var types = Array(gCnt).fill('goal').concat(Array(onT).fill('on_target'), Array(offT).fill('off_target'));
-
-      types.forEach(function(t, sIdx) {
-        var sSeed = (seed + sIdx * 37 + (side === 'home' ? 101 : 202)) % 1000;
-        var dist = t === 'goal' ? (7 + (sSeed % 10)) : (t === 'on_target' ? (12 + (sSeed % 15)) : (17 + (sSeed % 20)));
-        var yPos = t === 'goal' ? (35 + ((sSeed * 3) % 30)) : (22 + ((sSeed * 7) % 56));
-        var xgVal = t === 'goal' ? 0.38 : (t === 'on_target' ? 0.16 : 0.05);
-        var xPos = side === 'home' ? (96 - dist) : (4 + dist);
-        shotsMap.push({ side: side, type: t, x: xPos, y: yPos, xg: xgVal, label: t === 'goal' ? ('هدف ' + tName) : ('تسديدة ' + tName) });
-      });
+    // شريط البطاقات الرقمية والتوقعات (Summary Badges)
+    var badgesHtml = '';
+    if (Array.isArray(studio.summary_badges) && studio.summary_badges.length > 0) {
+      badgesHtml =
+        '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:14px;">' +
+          studio.summary_badges.map(function(b) {
+            return '<div style="background:#080d1a; border:1px solid var(--card-border); border-radius:10px; padding:8px 10px; text-align:center;">' +
+              '<div style="font-size:0.68rem; color:var(--muted); font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + b.pundit + '</div>' +
+              '<div style="font-size:0.88rem; font-weight:900; color:var(--accent-gold); margin-top:3px; direction:ltr;">' + b.score + '</div>' +
+            '</div>';
+          }).join('') +
+        '</div>';
     }
 
-    pushTeamShots('home', shotsH, sotH, hGoals, m.home_team);
-    pushTeamShots('away', shotsA, sotA, aGoals, m.away_team);
+    // كروت المحللين الأربعة
+    var punditsHtml = (studio.pundits || []).map(function(p) {
+      var borderCol = p.color || 'var(--accent-cyan)';
+      return '<div style="background:linear-gradient(145deg, #0e172a, #080d1a); border:1px solid var(--card-border); border-right:4px solid ' + borderCol + '; border-radius:14px; padding:12px 14px; margin-bottom:10px; box-shadow:0 4px 14px rgba(0,0,0,0.3);">' +
+        '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">' +
+          '<div style="display:flex; align-items:center; gap:8px;">' +
+            '<span style="width:32px; height:32px; border-radius:50%; background:rgba(255,255,255,0.05); border:1px solid ' + borderCol + '; display:inline-flex; align-items:center; justify-content:center; font-size:1rem;">' + p.avatar + '</span>' +
+            '<div>' +
+              '<div style="font-weight:900; font-size:0.88rem; color:#fff;">' + p.name + '</div>' +
+              '<div style="font-size:0.7rem; color:' + borderCol + '; font-weight:800;">' + p.role + '</div>' +
+            '</div>' +
+          '</div>' +
+          '<span style="font-size:0.65rem; background:rgba(255,255,255,0.04); color:var(--muted); padding:2px 8px; border-radius:99px; border:1px solid var(--card-border);">بيانات موثقة ✅</span>' +
+        '</div>' +
+        '<div style="font-size:0.83rem; line-height:1.7; color:#e2e8f0; font-weight:600;">' +
+          String(p.analysis || '').replace(/\*\*(.*?)\*\*/g, '<strong style="color:#fff;">$1</strong>') +
+        '</div>' +
+      '</div>';
+    }).join('');
 
-    var hDomPct = Math.round((hDomCount / Math.max(1, hDomCount + aDomCount)) * 100);
-    var fallbackData = {
-      has_momentum: true,
-      is_projected: (m.state === 'pre'),
-      home_team: m.home_team,
-      away_team: m.away_team,
-      home_dominance: hDomPct,
-      away_dominance: 100 - hDomPct,
-      peak_home_window: "16' - 30'",
-      peak_away_window: "61' - 75'",
-      threat_home: Math.min(99, Math.round(38 + sotH * 6 + posH * 0.35)),
-      threat_away: Math.min(99, Math.round(38 + sotA * 6 + (100 - posH) * 0.35)),
-      points: points,
-      markers: markers,
-      shots_map: shotsMap
-    };
-
-    if (typeof renderMomentumWidgetHtml === 'function') {
-      container.innerHTML = renderMomentumWidgetHtml('tm-mom', fallbackData);
+    // صندوق صدام الرأي والنقاش التكتيكي (Studio Debate)
+    var debateHtml = '';
+    if (studio.debate && studio.debate.topic) {
+      debateHtml =
+        '<div style="background:linear-gradient(135deg, rgba(255,214,0,0.08), #080d1a); border:1px solid rgba(255,214,0,0.35); border-radius:14px; padding:12px 14px; margin-bottom:14px;">' +
+          '<div style="font-size:0.82rem; font-weight:900; color:var(--accent-gold); margin-bottom:5px; display:flex; align-items:center; gap:6px;">' +
+            '<span>⚡</span> <span>طاولة النقاش وصدام الرأي: ' + studio.debate.topic + '</span>' +
+          '</div>' +
+          '<div style="font-size:0.8rem; line-height:1.65; color:#cbd5e1;">' + studio.debate.summary + '</div>' +
+        '</div>';
     }
+
+    // صندوق تفاعل المشاهد مع المحللين (اسأل محللاً في الاستوديو)
+    var askStudioHtml =
+      '<div style="background:#070c18; border:1px solid #1e2d4a; border-radius:14px; padding:12px 14px; margin-top:12px;">' +
+        '<div style="font-size:0.82rem; font-weight:900; color:var(--accent-cyan); margin-bottom:8px;">🙋‍♂️ وجّه سؤالاً مباشراً لأحد محللي الاستوديو حول هذه المباراة:</div>' +
+        '<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">' +
+          '<select id="studio-ask-pundit-sel" style="background:#0f182c; color:#fff; border:1px solid #24385e; border-radius:10px; padding:7px 10px; font-size:0.78rem; font-weight:800; outline:none; flex:1; min-width:150px;">' +
+            '<option value="tactician">🧠 د. طارق التكتيكي (الخطط والتكتيك)</option>' +
+            '<option value="data_analyst">📊 م. سامر الرقمي (الأرقام والـ xG)</option>' +
+            '<option value="momentum_star">🔥 كابتن رياض الحسم (الزخم والنجوم)</option>' +
+            '<option value="moderator_ref">⚖️ المستشار جمال التحكيمي (التحكيم والانضباط)</option>' +
+          '</select>' +
+          '<input type="text" id="studio-ask-input" placeholder="اكتب سؤالك عن اللقاء..." style="background:#0f182c; color:#fff; border:1px solid #24385e; border-radius:10px; padding:7px 12px; font-size:0.8rem; flex:2; min-width:180px; outline:none;">' +
+          '<button type="button" id="studio-ask-btn" class="ai-btn" onclick="submitStudioPunditQuestion()" style="padding:7px 16px; font-size:0.78rem;">إرسال 🎙️</button>' +
+        '</div>' +
+        '<div id="studio-ask-reply-box" style="display:none; background:#0b1324; border-right:3px solid var(--accent-green); border-radius:10px; padding:10px 12px; font-size:0.82rem; line-height:1.65; color:#e2e8f0; margin-top:8px;"></div>' +
+      '</div>';
+
+    container.innerHTML =
+      phaseTabsHtml +
+      '<div style="background:linear-gradient(90deg, rgba(0,230,118,0.12), rgba(0,210,255,0.08)); border:1px solid rgba(0,230,118,0.3); border-radius:12px; padding:10px 14px; margin-bottom:12px;">' +
+        '<div style="font-size:0.9rem; font-weight:900; color:#fff;">🎙️ ' + studio.headline + '</div>' +
+        '<div style="font-size:0.76rem; color:var(--accent-gold); font-weight:800; margin-top:4px;">🎯 ' + studio.key_battle + '</div>' +
+      '</div>' +
+      badgesHtml +
+      punditsHtml +
+      debateHtml +
+      askStudioHtml;
+
   } catch (err) {
-    container.innerHTML = '<div class="loading-state" style="color:var(--accent-red);">تعذر رسم منحنى الزخم.</div>';
+    container.innerHTML = '<div class="loading-state" style="color:var(--accent-red); padding:25px 0;">تعذر الاتصال بغرفة المحللين حالياً، يرجى المحاولة مرة أخرى.</div>';
   }
 }
 
+window.submitStudioPunditQuestion = async function() {
+  var m = window.activeMatchModalData;
+  var sel = document.getElementById('studio-ask-pundit-sel');
+  var inp = document.getElementById('studio-ask-input');
+  var btn = document.getElementById('studio-ask-btn');
+  var replyBox = document.getElementById('studio-ask-reply-box');
+  if (!m || !sel || !inp || !btn || !replyBox) return;
+
+  var qText = (inp.value || '').trim();
+  if (!qText) {
+    inp.focus();
+    return;
+  }
+
+  btn.disabled = true;
+  btn.innerText = 'جاري الرد... ⏳';
+  replyBox.style.display = 'block';
+  replyBox.innerHTML = '<span style="color:var(--muted);">🎙️ يقوم المحلل بقراءة أرقام المباراة وصياغة الرد...</span>';
+
+  try {
+    var res = await fetch('/api/ai_studio_ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        league_code: m.league_code || 'PL',
+        match_id: String(m.id),
+        pundit_id: sel.value,
+        question: qText
+      })
+    });
+    var json = await res.json();
+    if (json && json.status === 'success' && json.data) {
+      replyBox.innerHTML =
+        '<div style="font-weight:900; color:var(--accent-green); margin-bottom:4px;">🎙️ ' + json.data.pundit_name + ' (' + json.data.pundit_role + '):</div>' +
+        '<div>' + String(json.data.reply || '').replace(/\*\*(.*?)\*\*/g, '<strong style="color:#fff;">$1</strong>') + '</div>';
+    } else {
+      throw new Error('Fallback');
+    }
+  } catch (e) {
+    replyBox.innerHTML = '<span style="color:var(--accent-red);">تعذر الحصول على رد المحلل في هذه اللحظة.</span>';
+  } finally {
+    btn.disabled = false;
+    btn.innerText = 'إرسال 🎙️';
+  }
+};
 // =========================================================
 // 3. محرك التشكيلات الرسمية وتقييمات الأداء الحقيقية
 // =========================================================
