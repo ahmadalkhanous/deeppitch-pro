@@ -239,8 +239,16 @@ def serve_dashboard():
 
 
 @app.get("/sw.js")
-def service_worker():
-    return FileResponse("static/js/sw.js", media_type="application/javascript")
+def serve_service_worker():
+    sw_code = """
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+self.addEventListener('notificationclick', (event) => {
+    event.notification.close();
+    event.waitUntil(clients.openWindow('/'));
+});
+"""
+    return Response(content=sw_code.strip(), media_type="application/javascript")
 
 @app.get("/static/manifest.json")
 def manifest_file():

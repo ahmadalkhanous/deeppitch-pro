@@ -735,6 +735,180 @@
   </div>
 </div>
 
+<!-- شريط ومحرك الإشعارات الحقيقية للمباريات والأهداف -->
+<div id="dp-real-notify-bar" dir="rtl" style="
+  position: sticky; top: 0; z-index: 99999;
+  display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: rgba(7, 11, 21, 0.96); backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(0, 230, 118, 0.3); padding: 8px 12px; text-align: center;">
+  
+  <button id="dp-real-notify-btn" type="button" style="
+    background: #13203b; border: 1.5px solid #00d2ff; color: #00d2ff;
+    padding: 7px 16px; border-radius: 99px; font-size: 0.8rem; font-weight: 800;
+    cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+    🔕 تفعيل إشعارات الأهداف الحية
+  </button>
+
+  <button id="dp-real-notify-test" type="button" style="
+    background: rgba(255, 214, 0, 0.12); border: 1.5px solid #ffd600; color: #ffd600;
+    padding: 7px 14px; border-radius: 99px; font-size: 0.76rem; font-weight: 800;
+    cursor: pointer; display: inline-flex; align-items: center; gap: 5px;">
+    ⚡ إرسال إشعار حقيقي الآن
+  </button>
+</div>
+
+<script>
+(function initRealPushNotifications() {
+  let swReg = null;
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').then(reg => { swReg = reg; }).catch(() => {});
+  }
+
+  const notifyBtn = document.getElementById('dp-real-notify-btn');
+  const testBtn = document.getElementById('dp-real-notify-test');
+
+  function updateBtnState() {
+    if (!('Notification' in window)) return;
+    if (Notification.permission === 'granted') {
+      notifyBtn.innerHTML = '🔔 الإشعارات الحية مفعّلة';
+      notifyBtn.style.borderColor = '#00e676';
+      notifyBtn.style.color = '#00e676';
+      notifyBtn.style.background = 'rgba(0, 230, 118, 0.15)';
+    }
+  }
+  updateBtnState();
+
+  // نغمة صافرة الهدف
+  function playGoalSound() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.2, ctx.currentTime + i * 0.11);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.11 + 0.25);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + i * 0.11);
+        osc.stop(ctx.currentTime + i * 0.11 + 0.25);
+      });
+    } catch (e) {}
+  }
+
+  // إرسال إشعار نظام حقيقي للهاتف أو الحاسوب
+  window.triggerRealNotification = async function(title, body, iconUrl) {
+    playGoalSound();
+
+    // 1. إشعار النظام الحقيقي في شريط الهاتف العلوي
+    if ('Notification' in window && Notification.permission === 'granted') {
+      const options = {
+        body: body,
+        icon: iconUrl || '/static/manifest.json',
+        badge: iconUrl || '',
+        vibrate: [200, 100, 200, 100, 300],
+        dir: 'rtl',
+        lang: 'ar',
+        tag: 'deeppitch-live-' + Date.now(),
+        renotify: true
+      };
+      try {
+        const reg = swReg || (await navigator.serviceWorker.ready);
+        if (reg && reg.showNotification) {
+          await reg.showNotification(title, options);
+          return;
+        }
+      } catch (e) {}
+      try {
+        new Notification(title, options);
+      } catch (e) {}
+    }
+
+    // 2. شريط منبثق داخل الشاشة أيضاً لتأكيد التنبيه
+    const toast = document.createElement('div');
+    toast.dir = 'rtl';
+    toast.style.cssText = `
+      position: fixed; top: 58px; left: 50%; transform: translateX(-50%);
+      background: linear-gradient(135deg, #0d1b36, #071021);
+      border: 2px solid #00e676; color: #fff; padding: 12px 18px;
+      border-radius: 14px; z-index: 999999; min-width: 280px; max-width: 92vw;
+      box-shadow: 0 10px 30px rgba(0,230,118,0.35); text-align: right;
+    `;
+    toast.innerHTML = `<div style="color:#00e676;font-weight:900;font-size:0.88rem;">${title}</div>
+                       <div style="color:#e2e8f0;font-size:0.78rem;margin-top:3px;">${body}</div>`;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 4500);
+  };
+
+  // حدث زر تفعيل الإشعارات
+  notifyBtn.onclick = async function() {
+    if (!('Notification' in window)) {
+      alert('متصفحك الحالي لا يدعم إشعارات النظام الخارجية، يرجى فتح الرابط في متصفح Chrome.');
+      return;
+    }
+    const perm = await Notification.requestPermission();
+    updateBtnState();
+    if (perm === 'granted') {
+      window.triggerRealNotification(
+        '⚽ DeepPitch Analytics Pro',
+        'تم تفعيل الإشعارات الحقيقية بنجاح! ستصلك تنبيهات الأهداف والمباريات الجارية فوراً.'
+      );
+    } else {
+      alert('يرجى الضغط على علامة القفل بجانب رابط الموقع في المتصفح وتفعيل سماح (Allow) للإشعارات.');
+    }
+  };
+
+  // حدث زر التجربة الفورية
+  testBtn.onclick = async function() {
+    if ('Notification' in window && Notification.permission !== 'granted') {
+      await Notification.requestPermission();
+      updateBtnState();
+    }
+    window.triggerRealNotification(
+      '⚽ جوووول مباشر! (2 - 1)',
+      'تنبيه حي من رادار DeepPitch: تسجيل هدف جديد وتغير في مؤشر الزخم التكتيكي!'
+    );
+  };
+
+  // رادار حقيقي يعمل في الخلفية كل 40 ثانية لجلب أهداف المباريات الجارية من الـ API مباشرة
+  const liveScoreMemory = {};
+  let firstFetchDone = false;
+
+  async function pollRealLiveMatches() {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    try {
+      const res = await fetch('/api/today_matches');
+      if (!res.ok) return;
+      const data = await res.json();
+      const matches = data.matches || data.data || (Array.isArray(data) ? data : []);
+
+      matches.forEach(m => {
+        const id = m.id || `${m.home_team}_${m.away_team}`;
+        const hScore = m.home_score ?? m.homeScore;
+        const aScore = m.away_score ?? m.awayScore;
+        if (hScore === undefined || aScore === undefined || hScore === '-' || aScore === '-') return;
+
+        const scoreKey = `${hScore}-${aScore}`;
+        if (firstFetchDone && liveScoreMemory[id] && liveScoreMemory[id] !== scoreKey) {
+          window.triggerRealNotification(
+            `⚽ جووول! ${m.home_team} (${hScore} - ${aScore}) ${m.away_team}`,
+            `هدف جديد في بطولة ${m.league_name || m.league || 'مباريات اليوم المباشرة'}!`,
+            m.home_logo || m.away_logo || ''
+          );
+        }
+        liveScoreMemory[id] = scoreKey;
+      });
+      firstFetchDone = true;
+    } catch (e) {}
+  }
+
+  setTimeout(pollRealLiveMatches, 5000);
+  setInterval(pollRealLiveMatches, 40000);
+})();
+</script>
+
+
 <script src="/static/js/api.js"></script>
 <script src="/static/js/views.js"></script>
 <script src="/static/js/modals.js"></script>
