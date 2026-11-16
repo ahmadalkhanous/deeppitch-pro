@@ -2,24 +2,31 @@
 # DeepPitch Pro - Engine Core (Dixon-Coles, Hybrid ML & League Rules Engine)
 # =========================================================================
 
+# =========================================================================
+# DeepPitch Pro - Engine Core (Dixon-Coles, Hybrid ML & League Rules Engine)
+# =========================================================================
 import os
 import math
 import hashlib
+import warnings
 import numpy as np
 from scipy.stats import poisson
 
+warnings.filterwarnings("ignore")
+
+_ML_MODEL = None
 try:
     import joblib
-except ImportError:
-    joblib = None
-
-# تحميل نموذج التعلم الآلي إن وجد لدمجه مع النموذج الإحصائي
-_ML_MODEL = None
-if joblib and os.path.exists("football_model.joblib"):
-    try:
+    if os.path.exists("football_model.joblib"):
         _ML_MODEL = joblib.load("football_model.joblib")
-    except Exception:
-        _ML_MODEL = None
+        _ML_MODEL.predict_proba(np.zeros((1, 5)))
+except Exception as e:
+    print(f"⚠️ Notice: Pre-trained joblib model skipped ({e}). Using pure Dixon-Coles.")
+    _ML_MODEL = None
+
+# -------------------------------------------------------------------------
+# 1. القواعد التنظيمية الدقيقة لكل بطولة (التأهل، الملحق، الهبوط، وعدد الجولات)
+# -------------------------------------------------------------------------
 
 # -------------------------------------------------------------------------
 # 1. القواعد التنظيمية الدقيقة لكل بطولة (التأهل، الملحق، الهبوط، وعدد الجولات)

@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import database as db
-from engine import (
+from engine_core import (
     compute_fixture_probabilities,
     evaluate_tactical_edge,
     generate_h2h_history
