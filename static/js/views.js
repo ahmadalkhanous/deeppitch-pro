@@ -3825,3 +3825,407 @@ function renderQuizPostMatchSummary() {
     });
   }
 })();
+
+// =========================================================
+// 14. محرك تطبيق الجوال (PWA + شريط التنقل السفلي + تثبيت أعمدة الجداول + الأندية المفضلة الحية)
+// =========================================================
+(function initDeepPitchMobileSuite() {
+  const FAV_STORAGE_KEY = 'deeppitch_favorite_clubs_v1';
+  let deferredInstallPrompt = null;
+  let lastKnownScores = {};
+
+  function getFavoriteClubs() {
+    try {
+      return JSON.parse(localStorage.getItem(FAV_STORAGE_KEY) || '[]');
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveFavoriteClubs(list) {
+    try {
+      localStorage.setItem(FAV_STORAGE_KEY, JSON.stringify(list));
+    } catch (e) {}
+  }
+
+  function isClubFavorite(clubName) {
+    if (!clubName) return false;
+    const clean = clubName.trim().toLowerCase();
+    return getFavoriteClubs().some(c => c.toLowerCase() === clean);
+  }
+
+  window.toggleFavoriteClub = function(clubName, event) {
+    if (event) {
+      event.stopPropagation();
+      event.preventDefault();
+    }
+    const clean = (clubName || '').trim();
+    if (!clean || clean.length < 2) return;
+
+    let favs = getFavoriteClubs();
+    const existsIdx = favs.findIndex(c => c.toLowerCase() === clean.toLowerCase());
+    if (existsIdx >= 0) {
+      favs.splice(existsIdx, 1);
+      showMobileToast(`تمت إزالة (${clean}) من المفضلة`);
+    } else {
+      favs.push(clean);
+      showMobileToast(`⭐ تمت إضافة (${clean}) إلى أنديتك المفضلة!`);
+    }
+    saveFavoriteClubs(favs);
+    refreshFavoriteStarsAndSorting();
+  };
+
+  function showMobileToast(msg) {
+    const old = document.getElementById('dp-mobile-toast');
+    if (old) old.remove();
+    const toast = document.createElement('div');
+    toast.id = 'dp-mobile-toast';
+    toast.style.cssText = `
+      position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+      background: rgba(13, 22, 40, 0.96); border: 1.5px solid #ffd600;
+      color: #fff; padding: 9px 18px; border-radius: 99px; font-size: 0.82rem;
+      font-weight: 800; z-index: 99999; box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+      white-space: nowrap; direction: rtl;
+    `;
+    toast.innerText = msg;
+    document.body.appendChild(toast);
+    setTimeout(() => { if (toast.parentNode) toast.remove(); }, 2500);
+  }
+
+  // 1. حقن تنسيقات شريط التنقل السفلي + تثبيت أعمدة الجداول + النجوم
+  function injectMobileSuiteCSS() {
+    if (document.getElementById('dp-mobile-suite-css')) return;
+    const css = document.createElement('style');
+    css.id = 'dp-mobile-suite-css';
+    css.innerHTML = `
+      /* زر النجمة للأندية المفضلة */
+      .dp-fav-star-btn {
+        background: transparent !important;
+        border: none !important;
+        cursor: pointer !important;
+        font-size: 1rem !important;
+        line-height: 1 !important;
+        padding: 2px 4px !important;
+        color: #64748b !important;
+        transition: transform 0.18s ease, color 0.18s ease !important;
+        vertical-align: middle !important;
+      }
+      .dp-fav-star-btn.is-fav {
+        color: #ffd600 !important;
+        text-shadow: 0 0 10px rgba(255, 214, 0, 0.5) !important;
+        transform: scale(1.15) !important;
+      }
+
+      /* تمييز بطاقة مباراة الفريق المفضل */
+      .dp-fav-match-card {
+        border: 1.5px solid rgba(255, 214, 0, 0.65) !important;
+        box-shadow: 0 0 18px rgba(255, 214, 0, 0.14) !important;
+        position: relative !important;
+      }
+
+      /* تثبيت العمود الأول (الفريق) عند التمرير الأفقي في الجداول على الجوال */
+      @media (max-width: 860px) {
+        table {
+          border-collapse: separate !important;
+          border-spacing: 0 !important;
+        }
+        table th:first-child,
+        table td:first-child {
+          position: sticky !important;
+          right: 0 !important;
+          z-index: 4 !important;
+          background: #0d1526 !important;
+          box-shadow: -4px 0 10px rgba(0, 0, 0, 0.45) !important;
+        }
+        table th:first-child {
+          z-index: 6 !important;
+          background: #13203b !important;
+        }
+      }
+
+      /* شريط التنقل السفلي الثابت للهاتف (Bottom Navigation Bar) */
+      #dp-bottom-nav {
+        display: none;
+      }
+      @media (max-width: 768px) {
+        body {
+          padding-bottom: 72px !important;
+        }
+        #dp-bottom-nav {
+          display: flex !important;
+          position: fixed !important;
+          bottom: 0 !important;
+          left: 0 !important;
+          right: 0 !important;
+          height: 62px !important;
+          background: rgba(7, 11, 21, 0.96) !important;
+          backdrop-filter: blur(14px) !important;
+          -webkit-backdrop-filter: blur(14px) !important;
+          border-top: 1px solid rgba(0, 230, 118, 0.25) !important;
+          z-index: 9990 !important;
+          justify-content: space-around !important;
+          align-items: center !important;
+          padding: 4px 4px env(safe-area-inset-bottom, 4px) 4px !important;
+          box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.65) !important;
+        }
+        .dp-bnav-btn {
+          flex: 1 1 0 !important;
+          background: transparent !important;
+          border: none !important;
+          color: #94a3b8 !important;
+          display: flex !important;
+          flex-direction: column !important;
+          align-items: center !important;
+          justify-content: center !important;
+          gap: 2px !important;
+          font-size: 0.67rem !important;
+          font-weight: 800 !important;
+          cursor: pointer !important;
+          padding: 4px 2px !important;
+          border-radius: 10px !important;
+          transition: all 0.2s ease !important;
+        }
+        .dp-bnav-btn .bnav-ico {
+          font-size: 1.15rem !important;
+          line-height: 1.1 !important;
+        }
+        .dp-bnav-btn.active {
+          color: #00e676 !important;
+          background: rgba(0, 230, 118, 0.1) !important;
+        }
+
+        /* رفع زر مستشار الفانتازي العائم فوق الشريط السفلي */
+        #fantasy-fab,
+        .fantasy-fab,
+        .floating-ai-btn,
+        button[onclick*="Fantasy"],
+        button[onclick*="fantasy"] {
+          bottom: 72px !important;
+          left: 12px !important;
+          padding: 7px 12px !important;
+          font-size: 0.74rem !important;
+        }
+      }
+    `;
+    document.head.appendChild(css);
+  }
+
+  // 2. بناء شريط التنقل السفلي للجوال وربطه بالبوابات الرئيسية
+  function buildMobileBottomNav() {
+    if (document.getElementById('dp-bottom-nav')) return;
+    const nav = document.createElement('nav');
+    nav.id = 'dp-bottom-nav';
+    nav.setAttribute('dir', 'rtl');
+
+    const tabs = [
+      { id: 'home', icon: '🏠', label: 'الرئيسية', keywords: [] },
+      { id: 'today', icon: '🔴', label: 'مباشر', keywords: ['مباريات اليوم'] },
+      { id: 'standings', icon: '🏆', label: 'الترتيب', keywords: ['جدول الترتيب'] },
+      { id: 'mercato', icon: '🔄', label: 'الميركاتو', keywords: ['الانتقالات', 'الميركاتو'] },
+      { id: 'quiz', icon: '🎮', label: 'المسابقات', keywords: ['التحدي الكروي', 'المسابقات'] }
+    ];
+
+    nav.innerHTML = tabs.map((t, idx) => `
+      <button type="button" class="dp-bnav-btn ${idx === 0 ? 'active' : ''}" data-bnav="${t.id}">
+        <span class="bnav-ico">${t.icon}</span>
+        <span>${t.label}</span>
+      </button>
+    `).join('');
+
+    document.body.appendChild(nav);
+
+    nav.querySelectorAll('.dp-bnav-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        nav.querySelectorAll('.dp-bnav-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const targetId = btn.getAttribute('data-bnav');
+
+        if (targetId === 'home') {
+          const backBtn = Array.from(document.querySelectorAll('button')).find(b => b.textContent && b.textContent.includes('العودة للرئيسية'));
+          if (backBtn && backBtn.offsetParent !== null) backBtn.click();
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+          return;
+        }
+
+        const tabObj = tabs.find(x => x.id === targetId);
+        if (!tabObj) return;
+
+        // البحث عن بطاقة البوابة المطابقة وتشغيلها
+        const portalCards = Array.from(document.querySelectorAll('.nav-card, .portal-card, [onclick]'));
+        const matchedCard = portalCards.find(el => {
+          const txt = el.textContent || '';
+          return tabObj.keywords.some(kw => txt.includes(kw)) && !el.closest('#dp-bottom-nav');
+        });
+        if (matchedCard) {
+          matchedCard.click();
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+      });
+    });
+  }
+
+  // 3. تسجيل Service Worker وتفعيل زر تثبيت التطبيق (PWA)
+  function registerPWAEngine() {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredInstallPrompt = e;
+
+      if (document.getElementById('dp-pwa-install-pill')) return;
+      const headerEl = document.querySelector('header, .hero-header, .container');
+      if (!headerEl) return;
+
+      const installBtn = document.createElement('button');
+      installBtn.id = 'dp-pwa-install-pill';
+      installBtn.type = 'button';
+      installBtn.innerHTML = '📲 تثبيت التطبيق على جوالك';
+      installBtn.style.cssText = `
+        display: inline-flex; align-items: center; gap: 6px; margin: 8px auto 0 auto;
+        background: linear-gradient(90deg, #00e676, #00d2ff); color: #050912;
+        border: none; padding: 7px 16px; border-radius: 99px; font-size: 0.78rem;
+        font-weight: 900; cursor: pointer; box-shadow: 0 4px 15px rgba(0, 230, 118, 0.35);
+      `;
+      installBtn.onclick = async () => {
+        if (!deferredInstallPrompt) return;
+        deferredInstallPrompt.prompt();
+        const choice = await deferredInstallPrompt.userChoice;
+        if (choice && choice.outcome === 'accepted') {
+          installBtn.remove();
+        }
+        deferredInstallPrompt = null;
+      };
+      headerEl.insertAdjacentElement('afterbegin', installBtn);
+    });
+  }
+
+  // 4. إضافة نجوم المفضلة بجانب الأندية وترتيب المباريات المفضلة في الأعلى
+  let onlyFavoritesFilter = false;
+
+  function refreshFavoriteStarsAndSorting() {
+    const favs = getFavoriteClubs();
+
+    // أ) إضافة النجمة في صفوف جدول الترتيب
+    document.querySelectorAll('table tbody tr').forEach(tr => {
+      const cells = tr.querySelectorAll('td');
+      if (cells.length < 2) return;
+      const teamCell = cells[0].querySelector('img') ? cells[0] : (cells[1].querySelector('img') ? cells[1] : cells[0]);
+      if (!teamCell) return;
+
+      const rawName = teamCell.textContent.replace(/[☆⭐0-9]/g, '').trim();
+      if (!rawName || rawName.length < 2) return;
+
+      let starBtn = teamCell.querySelector('.dp-fav-star-btn');
+      if (!starBtn) {
+        starBtn = document.createElement('button');
+        starBtn.type = 'button';
+        starBtn.className = 'dp-fav-star-btn';
+        starBtn.title = 'إضافة إلى أنديتي المفضلة';
+        starBtn.onclick = (ev) => window.toggleFavoriteClub(rawName, ev);
+        teamCell.prepend(starBtn);
+      }
+      const active = isClubFavorite(rawName);
+      starBtn.innerText = active ? '⭐' : '☆';
+      starBtn.classList.toggle('is-fav', active);
+    });
+
+    // ب) إضافة النجوم في بطاقات المباريات (مباريات اليوم ومباريات الجولة)
+    const matchCards = Array.from(document.querySelectorAll('.match-card, .fixture-card, [data-match-id]'));
+    if (matchCards.length > 0) {
+      const listParent = matchCards[0].parentElement;
+      if (listParent && !document.getElementById('dp-fav-filter-bar') && favs.length > 0) {
+        const bar = document.createElement('div');
+        bar.id = 'dp-fav-filter-bar';
+        bar.style.cssText = 'display:flex; justify-content:space-between; align-items:center; background:#0b1324; border:1px solid rgba(255,214,0,0.35); padding:7px 12px; border-radius:12px; margin-bottom:10px; font-size:0.78rem;';
+        bar.innerHTML = `
+          <span style="color:#ffd600; font-weight:800;">⭐ أنديتك المفضلة (${favs.length}) مثبتة في الأعلى</span>
+          <button type="button" id="dp-toggle-only-favs" style="background:#13203b; border:1px solid #ffd600; color:#ffd600; padding:4px 10px; border-radius:99px; font-size:0.72rem; font-weight:800; cursor:pointer;">
+            عرض المفضلة فقط
+          </button>
+        `;
+        listParent.parentElement.insertBefore(bar, listParent);
+        document.getElementById('dp-toggle-only-favs').onclick = function() {
+          onlyFavoritesFilter = !onlyFavoritesFilter;
+          this.innerText = onlyFavoritesFilter ? 'عرض جميع المباريات' : 'عرض المفضلة فقط';
+          refreshFavoriteStarsAndSorting();
+        };
+      }
+
+      matchCards.forEach(card => {
+        const teamEls = card.querySelectorAll('.team-name, h4, strong');
+        let cardHasFav = false;
+        teamEls.forEach(el => {
+          const tName = el.textContent.replace(/[☆⭐]/g, '').trim();
+          if (!tName || tName.length < 2 || tName.length > 28 || /\d/.test(tName)) return;
+          if (isClubFavorite(tName)) cardHasFav = true;
+
+          let sBtn = el.querySelector('.dp-fav-star-btn');
+          if (!sBtn && (el.classList.contains('team-name') || el.tagName === 'H4')) {
+            sBtn = document.createElement('button');
+            sBtn.type = 'button';
+            sBtn.className = 'dp-fav-star-btn';
+            sBtn.onclick = (ev) => window.toggleFavoriteClub(tName, ev);
+            el.appendChild(sBtn);
+          }
+          if (sBtn) {
+            const act = isClubFavorite(tName);
+            sBtn.innerText = act ? '⭐' : '☆';
+            sBtn.classList.toggle('is-fav', act);
+          }
+        });
+
+        card.classList.toggle('dp-fav-match-card', cardHasFav);
+        if (onlyFavoritesFilter) {
+          card.style.display = cardHasFav ? '' : 'none';
+        } else {
+          card.style.display = '';
+        }
+
+        // تنبيه صوتي خفيف عند تغير نتيجة مباراة لفريق مفضل أثناء التصفح
+        const mId = card.getAttribute('data-match-id') || card.id;
+        const scoreTxt = (card.querySelector('.score-box, .match-score') || {}).textContent || '';
+        if (cardHasFav && mId && scoreTxt.includes('-')) {
+          if (lastKnownScores[mId] && lastKnownScores[mId] !== scoreTxt) {
+            showMobileToast(`⚽ جووول! تحديث في مباراة فريقك المفضل (${scoreTxt.trim()})`);
+            if (typeof playQuizSound === 'function') playQuizSound('correct');
+          }
+          lastKnownScores[mId] = scoreTxt;
+        }
+      });
+
+      // رفع بطاقات الأندية المفضلة إلى أعلى القائمة تلقائياً
+      if (listParent && favs.length > 0) {
+        const favCards = matchCards.filter(c => c.classList.contains('dp-fav-match-card'));
+        favCards.reverse().forEach(fc => {
+          if (listParent.firstChild !== fc) {
+            listParent.insertBefore(fc, listParent.firstChild);
+          }
+        });
+      }
+    }
+  }
+
+  injectMobileSuiteCSS();
+  registerPWAEngine();
+
+  let debounceTimer = null;
+  const scheduleEnhance = () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      buildMobileBottomNav();
+      refreshFavoriteStarsAndSorting();
+    }, 220);
+  };
+
+  if (document.body) {
+    scheduleEnhance();
+    new MutationObserver(scheduleEnhance).observe(document.body, { childList: true, subtree: true });
+  } else {
+    window.addEventListener('DOMContentLoaded', () => {
+      scheduleEnhance();
+      new MutationObserver(scheduleEnhance).observe(document.body, { childList: true, subtree: true });
+    });
+  }
+})();

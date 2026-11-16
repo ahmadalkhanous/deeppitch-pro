@@ -235,6 +235,12 @@ def serve_dashboard():
         return FileResponse("index.html")
     return {"message": "index.html not found"}
 
+from fastapi.responses import FileResponse
+
+@app.get("/sw.js")
+def serve_service_worker():
+    return FileResponse("static/sw.js", media_type="application/javascript")
+
 
 @app.get("/api/leagues")
 def get_leagues():
