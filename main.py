@@ -16,7 +16,6 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Optional
-
 import database as db
 
 app = FastAPI(title="DeepPitch Multi-League Analytics Platform")
@@ -235,10 +234,10 @@ def serve_dashboard():
         return FileResponse("index.html")
     return {"message": "index.html not found"}
 
-from fastapi.responses import FileResponse
+    
 
 @app.get("/sw.js")
-def serve_service_worker():
+def service_worker():
     return FileResponse("static/sw.js", media_type="application/javascript")
 
 
