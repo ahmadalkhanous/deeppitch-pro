@@ -236,9 +236,15 @@ def serve_dashboard():
 
     
 
+
+
 @app.get("/sw.js")
 def service_worker():
-    return FileResponse("static/sw.js", media_type="application/javascript")
+    return FileResponse("static/js/sw.js", media_type="application/javascript")
+
+@app.get("/static/manifest.json")
+def manifest_file():
+    return FileResponse("manifest.json", media_type="application/json")
 
 
 @app.get("/api/leagues")
