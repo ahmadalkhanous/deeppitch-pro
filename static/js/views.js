@@ -560,11 +560,11 @@ function buildGroupFilterTabsHtml(items, leagueCode, onClickFnName) {
   }
 
   return `
-    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; padding:8px 10px; background:#070b15; border:1px solid var(--card-border); border-radius:14px;">
+    <div class="dp-h-scroll-bar" style="display:flex; gap:8px; flex-wrap:nowrap; overflow-x:auto; margin-bottom:14px; padding:8px 10px; background:#070b15; border:1px solid var(--card-border); border-radius:14px;">
       ${tabs.map(tb => {
         const isAct = window._activeGroupFilter === tb.key;
         return `
-          <button onclick="${onClickFnName}('${tb.key}')" style="background:${isAct ? 'rgba(0,230,118,0.18)' : '#0f172a'}; color:${isAct ? 'var(--accent-green)' : '#cbd5e1'}; border:1px solid ${isAct ? 'var(--accent-green)' : '#1e293b'}; padding:5px 14px; border-radius:20px; font-size:0.78rem; font-weight:800; cursor:pointer; transition:all 0.2s;">
+          <button onclick="${onClickFnName}('${tb.key}')" style="flex:0 0 auto; white-space:nowrap; background:${isAct ? 'rgba(0,230,118,0.18)' : '#0f172a'}; color:${isAct ? 'var(--accent-green)' : '#cbd5e1'}; border:1px solid ${isAct ? 'var(--accent-green)' : '#1e293b'}; padding:5px 14px; border-radius:20px; font-size:0.78rem; font-weight:800; cursor:pointer; transition:all 0.2s;">
             ${tb.label}
           </button>
         `;
@@ -675,11 +675,11 @@ function renderStandingsTableRows(standings, leagueCode) {
             ${statusBadge}
           </div>
         </td>
-        <td>${t.played}</td>
-        <td class="col-hide-mobile">${t.won}</td>
-        <td class="col-hide-mobile">${t.drawn}</td>
-        <td class="col-hide-mobile">${t.lost}</td>
-        <td class="col-hide-mobile">${t.gf}:${t.ga}</td>
+      <td>${t.played}</td>
+        <td>${t.won}</td>
+        <td>${t.drawn}</td>
+        <td>${t.lost}</td>
+        <td>${t.gf}:${t.ga}</td>
         <td style="color:${t.gd > 0 ? 'var(--accent-green)' : t.gd < 0 ? 'var(--accent-red)' : 'var(--muted)'}">
           ${t.gd > 0 ? '+' : ''}${t.gd}
         </td>
@@ -785,11 +785,13 @@ function renderProjectionsTableRows(dataList, leagueCode) {
   if (!tbody) return;
   const rules = getLeagueRulesConfig(leagueCode);
 
-  let filterWrap = document.getElementById('proj-group-filter-bar');
-  if (!filterWrap && tbody.closest('.data-card')) {
+let filterWrap = document.getElementById('proj-group-filter-bar');
+  const parentCard = tbody.closest('.data-card');
+  const tblCont = tbody.closest('.table-container') || tbody.closest('table');
+  if (!filterWrap && parentCard && tblCont && tblCont.parentElement === parentCard) {
     filterWrap = document.createElement('div');
     filterWrap.id = 'proj-group-filter-bar';
-    tbody.closest('.data-card').insertBefore(filterWrap, tbody.closest('table'));
+    parentCard.insertBefore(filterWrap, tblCont);
   }
   if (filterWrap) {
     filterWrap.innerHTML = buildGroupFilterTabsHtml(dataList, leagueCode, 'filterProjectionsByGroup');
@@ -1085,10 +1087,10 @@ function filterHistorySeasons(query) {
     <tr>
       <td style="color:var(--muted); font-size:0.75rem;">#${list.length - list.indexOf(s)}</td>
       <td style="font-weight:900; color:var(--accent-cyan); white-space:nowrap;">${s.season}</td>
-      <td style="font-weight:900; color:var(--accent-gold);">🏆 ${s.champion}</td>
-      <td style="font-size:0.8rem; color:#e2e8f0;">${s.runner_up || '-'}</td>
-      <td style="font-size:0.75rem; color:#94a3b8; line-height:1.4;">${(s.top4 || []).join(' • ')}</td>
-      <td style="font-size:0.78rem; color:#00e676; font-weight:700;">${s.top_scorer || '-'}</td>
+      <td style="font-weight:900; color:var(--accent-gold); max-width:145px; overflow:hidden; text-overflow:ellipsis;">🏆 ${s.champion}</td>
+      <td style="font-size:0.8rem; color:#e2e8f0; max-width:130px; overflow:hidden; text-overflow:ellipsis;">${s.runner_up || '-'}</td>
+      <td style="font-size:0.75rem; color:#94a3b8; max-width:180px; overflow:hidden; text-overflow:ellipsis;" title="${(s.top4 || []).join(' • ')}">${(s.top4 || []).slice(0, 3).join(' • ')}</td>
+      <td style="font-size:0.78rem; color:#00e676; font-weight:700; max-width:160px; overflow:hidden; text-overflow:ellipsis;">${s.top_scorer || '-'}</td>
     </tr>
   `).join('');
 }
@@ -1130,7 +1132,7 @@ async function loadLeagueHistory(leagueCode) {
         </div>
 
         <h4 style="font-size:0.98rem; color:var(--accent-cyan); margin-bottom:12px;">🌟 الأرقام القياسية وأساطير البطولة عبر التاريخ</h4>
-        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(235px, 1fr)); gap:10px; margin-bottom:26px;">
+        <div class="dp-h-scroll-bar" style="margin-bottom:22px; gap:12px;">
           <div style="background:#0c121e; border:1px solid var(--card-border); border-right:4px solid #00e676; border-radius:10px; padding:10px 14px;">
             <div style="font-size:0.74rem; color:var(--muted);">⚽ الهداف التاريخي للبطولة</div>
             <div style="font-weight:900; font-size:0.9rem; color:#fff; margin-top:4px;">${rec.top_scorer || '-'}</div>
@@ -1181,7 +1183,7 @@ async function loadLeagueHistory(leagueCode) {
           </div>
         </div>
 
-        <div style="display:grid; grid-template-columns: 1fr 2fr; gap:18px;" class="standings-layout">
+        <div style="display:grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap:18px;" class="standings-layout">
           <div class="data-card" style="margin:0;">
             <h4 style="font-size:0.95rem; color:var(--accent-gold); margin-bottom:12px;">🏆 السجل الذهبي للأندية المتوجة (${titles.length} نادٍ)</h4>
             <div class="table-container" style="max-height:540px; overflow-y:auto;">
@@ -3616,23 +3618,62 @@ function renderQuizPostMatchSummary() {
     const style = document.createElement('style');
     style.id = 'dp-mobile-master-css';
     style.innerHTML = `
+      /* إصلاح تناسق شريط العودة للرئيسية ومنع التصاقه بعنوان الصفحة */
+      .mobile-back-bar {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: space-between !important;
+        gap: 12px !important;
+        padding: 10px 14px !important;
+      }
+      .back-btn {
+        flex-shrink: 0 !important;
+        white-space: nowrap !important;
+        padding: 6px 13px !important;
+        font-size: 0.78rem !important;
+      }
+      .back-bar-title {
+        flex: 1 !important;
+        min-width: 0 !important;
+        text-align: left !important;
+        font-size: 0.84rem !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+      }
+
+      /* إصلاح خروج أسماء الأندية من الكونتاينر وتفعيل السكرول في الميركاتو */
+      .mercato-chips-group {
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        padding-bottom: 6px !important;
+        gap: 8px !important;
+      }
+      .mercato-region-chip, .mercato-filter-chip {
+        flex: 0 0 auto !important;
+        white-space: nowrap !important;
+      }
+      .transfer-bridge-box {
+        grid-template-columns: minmax(0, 1fr) minmax(80px, 1.05fr) minmax(0, 1fr) !important;
+        overflow: hidden !important;
+      }
+      .t-club-node, .t-arrow-tunnel, .renewal-club-side {
+        min-width: 0 !important;
+        max-width: 100% !important;
+        overflow: hidden !important;
+      }
+      .t-club-name, .t-fee-lbl, .t-deal-type-lbl {
+        max-width: 100% !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        display: block !important;
+      }
+
       /* شريط السكرول العرضي القياسي لجميع الفلاتر والأزرار */
       .dp-h-scroll-bar {
-        display: flex !important;
-        flex-direction: row !important;
-        flex-wrap: nowrap !important;
-        align-items: center !important;
-        justify-content: flex-start !important;
-        gap: 8px !important;
-        width: 100% !important;
-        overflow-x: auto !important;
-        overflow-y: hidden !important;
-        padding: 5px 4px 9px 4px !important;
-        -webkit-overflow-scrolling: touch !important;
-        scroll-snap-type: x proximity !important;
-        scrollbar-width: thin !important;
-        scrollbar-color: rgba(0, 230, 118, 0.35) transparent !important;
-      }
       .dp-h-scroll-bar::-webkit-scrollbar { height: 4px !important; }
       .dp-h-scroll-bar::-webkit-scrollbar-thumb {
         background: rgba(0, 230, 118, 0.4) !important;
@@ -3924,22 +3965,34 @@ function renderQuizPostMatchSummary() {
       }
 
       /* تثبيت العمود الأول (الفريق) عند التمرير الأفقي في الجداول على الجوال */
+      /* تثبيت عمود اسم النادي (العمود الثاني) وتفعيل السكرول العرضي في جميع الجداول */
+      .standings-layout, .data-card {
+        min-width: 0 !important;
+        max-width: 100% !important;
+      }
+      .table-container {
+        width: 100% !important;
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+      }
       @media (max-width: 860px) {
-        table {
+        .styled-table {
+          min-width: 560px !important;
           border-collapse: separate !important;
           border-spacing: 0 !important;
         }
-        table th:first-child,
-        table td:first-child {
+        .styled-table th:nth-child(2),
+        .styled-table td:nth-child(2):not([colspan]) {
           position: sticky !important;
           right: 0 !important;
-          z-index: 4 !important;
+          z-index: 5 !important;
           background: #0d1526 !important;
-          box-shadow: -4px 0 10px rgba(0, 0, 0, 0.45) !important;
+          box-shadow: -5px 0 12px rgba(0, 0, 0, 0.65) !important;
+          border-left: 1px solid #1d2d4d !important;
         }
-        table th:first-child {
-          z-index: 6 !important;
-          background: #13203b !important;
+        .styled-table th:nth-child(2) {
+          z-index: 7 !important;
+          background: #090e1c !important;
         }
       }
 
@@ -4227,5 +4280,6 @@ function renderQuizPostMatchSummary() {
       scheduleEnhance();
       new MutationObserver(scheduleEnhance).observe(document.body, { childList: true, subtree: true });
     });
+  
   }
 })();

@@ -1,0 +1,20 @@
+{
+  "name": "DeepPitch Analytics Pro",
+  "short_name": "DeepPitch Pro",
+  "description": "منصة التحليل الكروي الذكي والنتائج المباشرة وساحة المسابقات",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#070b15",
+  "theme_color": "#070b15",
+  "orientation": "portrait-primary",
+  "dir": "rtl",
+  "lang": "ar",
+  "icons": [
+    {
+      "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='110' fill='%23070b15'/><circle cx='256' cy='256' r='195' fill='none' stroke='%2300e676' stroke-width='22'/><text x='256' y='295' font-size='190' text-anchor='middle' fill='%2300e676' font-family='Arial' font-weight='bold'>DP</text></svg>",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
