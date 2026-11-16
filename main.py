@@ -6,6 +6,7 @@ import threading
 import urllib.request
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
+
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
@@ -22,9 +23,10 @@ from engine import (
 
 app = FastAPI(title="DeepPitch Multi-League Analytics Platform")
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# تفعيل CORS لضمان عدم حظر أي طلب عبر أنفاق DevTunnels أو الشبكات الخارجية
+# تفعيل CORS لضمان عدم حظر أي طلب عبر الشبكات الخارجية
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -43,191 +45,7 @@ TODAY_CACHE_TTL = 30
 @app.on_event("startup")
 def startup_event():
     db.init_db()
-    # تشغيل التسخين المسبق للدوريات والأخبار في خيط خلفي مستقل دون تعطيل بدء السيرفر
     threading.Thread(target=db.background_warm_all_leagues, daemon=True).start()
-
-
-def evaluate_tactical_edge(home_short, away_short, home_elo, away_elo, p_home, p_draw, p_away, xg_home, xg_away):
-    elo_diff = (home_elo + 50.0) - away_elo
-    xg_diff = xg_home - xg_away
-
-    if (p_home >= 70.0 and xg_diff >= 1.3) or (p_away >= 68.0 and xg_diff <= -1.2):
-        fav = home_short if p_home > p_away else away_short
-        return {
-            "type": "certainty",
-            "label": "🔒 حسم تكتيكي مرتفع",
-            "color": "#00e676",
-            "reason": f"فارق الأداء كاسح لصالح {fav}؛ تفوق حاد في الأهداف المتوقعة (فارق xG: {abs(round(xg_diff, 2))}) مع استقرار تكتيكي تام."
-        }
-
-    if elo_diff >= 90.0 and (p_draw + p_away) >= 42.0:
-        return {
-            "type": "upset",
-            "label": "⚠️ إنذار تعثر للمرشح",
-            "color": "#ff9100",
-            "reason": f"رغم تقدم {home_short} التاريخي، إلا أن صلابة الضيف تجعل خطر التعثر بالتعادل أو الخسارة وارداً بنسبة {round(p_draw + p_away, 1)}%."
-        }
-
-    if elo_diff <= -80.0 and (p_draw + p_home) >= 46.0:
-        return {
-            "type": "trap",
-            "label": "🚨 فخ تكتيكي للضيف",
-            "color": "#ff5252",
-            "reason": f"المرشح {away_short} يواجه صعوبة خارج ملعبه أمام أفضلية الأرض المرتفعة؛ فرصة تفادي المضيف للهزيمة تبلغ {round(p_draw + p_home, 1)}%."
-        }
-
-    if abs(p_home - p_away) <= 6.0 and p_draw >= 27.0:
-        return {
-            "type": "deadheat",
-            "label": "⚖️ صراع متكافئ",
-            "color": "#00d2ff",
-            "reason": "مواجهة مغلقة ومتكافئة تكتيكياً، احتمالية التعادل ترتفع وحسم النتيجة يعتمد على تفاصيل جزئية."
-        }
-
-    return {
-        "type": "standard",
-        "label": "📊 نسق إحصائي طبيعي",
-        "color": "#8292b0",
-        "reason": "المواجهة تسير ضمن النسق الرقمي المعتاد لمواجهات هذا الدوري دون مؤشرات شاذة."
-    }
-
-
-def generate_h2h_history(home_short, away_short, home_elo, away_elo):
-    """توليد سجل مواجهات مباشرة تاريخي دقيق ومتسق لكل لقاء اعتماداً على تصنيف الفريقين"""
-    seed_str = f"{min(home_short, away_short)}_{max(home_short, away_short)}"
-    seed = int(hashlib.md5(seed_str.encode()).hexdigest()[:7], 16)
-
-    elo_diff = home_elo - away_elo
-    p_h = 0.40 + (elo_diff / 800.0)
-    p_a = 0.35 - (elo_diff / 800.0)
-    p_h = max(0.15, min(0.70, p_h))
-    p_a = max(0.15, min(0.70, p_a))
-
-    h_wins = int(round(p_h * 6))
-    a_wins = int(round(p_a * 6))
-    draws = max(0, 6 - (h_wins + a_wins))
-    if h_wins + a_wins + draws > 6:
-        draws = max(1, 6 - (h_wins + a_wins))
-
-    years = ["2026", "2025", "2025", "2024", "2024", "2023"]
-    recent_matches = []
-
-    outcomes = (["H"] * h_wins) + (["D"] * draws) + (["A"] * a_wins)
-    state = seed
-    shuffled_outcomes = []
-    while outcomes:
-        state = (state * 1103515245 + 12345) & 0x7fffffff
-        idx = state % len(outcomes)
-        shuffled_outcomes.append(outcomes.pop(idx))
-
-    total_goals = 0
-    for i, res in enumerate(shuffled_outcomes[:5]):
-        if res == "H":
-            gh, ga = (2, 0) if (i % 2 == 0) else (3, 1)
-        elif res == "A":
-            gh, ga = (0, 1) if (i % 2 == 0) else (1, 2)
-        else:
-            gh, ga = (1, 1) if (i % 2 == 0) else (2, 2)
-
-        total_goals += (gh + ga)
-        recent_matches.append({
-            "season": years[i],
-            "score": f"{gh} - {ga}",
-            "winner": res
-        })
-
-    avg_goals = round(total_goals / max(1, len(recent_matches)), 1)
-
-    if h_wins >= 4:
-        streak_text = f"تفوق كاسح لـ {home_short}: فاز في {h_wins} من آخر 6 مواجهات."
-    elif a_wins >= 4:
-        streak_text = f"عقدة تاريخية لصالح {away_short}: حقق الفوز في {a_wins} من آخر 6 لقاءات."
-    elif draws >= 3:
-        streak_text = "تقارب شديد: التعادل سيطر على نصف المواجهات الأخيرة."
-    else:
-        streak_text = f"سجل متكافئ: ({h_wins} فوز لـ {home_short} مقابل {a_wins} لـ {away_short})."
-
-    return {
-        "home_wins": h_wins,
-        "draws": draws,
-        "away_wins": a_wins,
-        "total": h_wins + draws + a_wins,
-        "avg_goals": avg_goals,
-        "streak_text": streak_text,
-        "recent_matches": recent_matches
-    }
-
-
-def compute_fixture_probabilities(home_att, home_def, away_att, away_def, home_elo=1500, away_elo=1500, home_adv_mult=1.24, max_goals=5):
-    elo_diff = (home_elo + 50.0) - away_elo
-    elo_weight = np.clip(np.sqrt(10.0 ** (elo_diff / 900.0)), 0.45, 2.3)
-
-    lambda_home = float(home_att * away_def * elo_weight * home_adv_mult)
-    mu_away = float(away_att * home_def / elo_weight)
-
-    lambda_home = max(0.4, min(4.5, lambda_home))
-    mu_away = max(0.3, min(3.8, mu_away))
-
-    matrix = np.zeros((max_goals + 1, max_goals + 1))
-    for h in range(max_goals + 1):
-        for a in range(max_goals + 1):
-            matrix[h, a] = poisson.pmf(h, lambda_home) * poisson.pmf(a, mu_away)
-
-    matrix /= np.sum(matrix)
-
-    p_home = float(np.sum(np.tril(matrix, -1))) * 100.0
-    p_draw = float(np.sum(np.diag(matrix))) * 100.0
-    p_away = float(np.sum(np.triu(matrix, 1))) * 100.0
-
-    p_over_25 = float(np.sum([matrix[h, a] for h in range(max_goals + 1) for a in range(max_goals + 1) if h + a > 2.5])) * 100.0
-    p_under_25 = 100.0 - p_over_25
-    p_btts_yes = float(np.sum([matrix[h, a] for h in range(1, max_goals + 1) for a in range(1, max_goals + 1)])) * 100.0
-    p_btts_no = 100.0 - p_btts_yes
-
-    exp_h = int(np.round(lambda_home))
-    exp_a = int(np.round(mu_away))
-
-    if p_home >= p_draw and p_home >= p_away:
-        best_h = max(1, exp_h)
-        best_a = min(best_h - 1, exp_a)
-        if lambda_home >= 2.2 and best_h < 2:
-            best_h = 2
-        if lambda_home >= 2.8 and (best_h - best_a) < 2:
-            best_h = 3
-    elif p_away > p_home and p_away >= p_draw:
-        best_a = max(1, exp_a)
-        best_h = min(best_a - 1, exp_h)
-        if mu_away >= 2.2 and best_a < 2:
-            best_a = 2
-        if mu_away >= 2.8 and (best_a - best_h) < 2:
-            best_a = 3
-    else:
-        if (lambda_home + mu_away) >= 2.6:
-            best_h, best_a = 2, 2
-        elif (lambda_home + mu_away) <= 1.2:
-            best_h, best_a = 0, 0
-        else:
-            best_h, best_a = 1, 1
-
-    score_prob = round(float(matrix[min(best_h, max_goals), min(best_a, max_goals)]) * 100.0, 1)
-    heatmap = [[round(float(matrix[h, a]) * 100.0, 1) for a in range(5)] for h in range(5)]
-
-    return {
-        "xg_home": round(lambda_home, 2),
-        "xg_away": round(mu_away, 2),
-        "prob_home": round(p_home, 1),
-        "prob_draw": round(p_draw, 1),
-        "prob_away": round(p_away, 1),
-        "most_likely_score": f"{best_h} - {best_a}",
-        "score_prob": score_prob,
-        "markets": {
-            "over_25": round(p_over_25, 1),
-            "under_25": round(p_under_25, 1),
-            "btts_yes": round(p_btts_yes, 1),
-            "btts_no": round(p_btts_no, 1)
-        },
-        "heatmap": heatmap
-    }
 
 
 @app.get("/")
@@ -236,20 +54,24 @@ def serve_dashboard():
         return FileResponse("index.html")
     return {"message": "index.html not found"}
 
-    
-
-
 
 @app.get("/sw.js")
 def serve_service_worker():
     if os.path.exists("sw.js"):
         return FileResponse("sw.js", media_type="application/javascript")
-    return Response(content="self.addEventListener('install', () => self.skipWaiting());", media_type="application/javascript")
+    return Response(
+        content="self.addEventListener('install', () => self.skipWaiting());",
+        media_type="application/javascript"
+    )
 
 
 @app.get("/static/manifest.json")
 def manifest_file():
-    return FileResponse("manifest.json", media_type="application/json")
+    if os.path.exists("manifest.json"):
+        return FileResponse("manifest.json", media_type="application/json")
+    if os.path.exists("static/manifest.json"):
+        return FileResponse("static/manifest.json", media_type="application/json")
+    return Response(content="{}", media_type="application/json")
 
 
 @app.get("/api/leagues")
@@ -270,7 +92,7 @@ def get_gameweek_predictions(league_code: str):
 
     results = []
     for f in fixtures:
-       stats = compute_fixture_probabilities(
+        stats = compute_fixture_probabilities(
             home_att=f["home_attack"],
             home_def=f["home_defense"],
             away_att=f["away_attack"],
@@ -281,7 +103,7 @@ def get_gameweek_predictions(league_code: str):
             away_form=f.get("away_form")
         )
 
-    edge_data = evaluate_tactical_edge(
+        edge_data = evaluate_tactical_edge(
             home_short=f["home_short"],
             away_short=f["away_short"],
             home_elo=f["home_elo"],
@@ -293,11 +115,11 @@ def get_gameweek_predictions(league_code: str):
             xg_away=stats["xg_away"]
         )
 
-    h2h_data = generate_h2h_history(
+        h2h_data = generate_h2h_history(
             f["home_short"], f["away_short"], f["home_elo"], f["away_elo"]
         )
 
-    results.append({
+        results.append({
             "fixture_id": f["fixture_id"],
             "gameweek": f["gameweek"],
             "kickoff_time": f["kickoff_time"],
@@ -346,14 +168,12 @@ def get_official_standings_route(league_code: str):
     standings = db.get_official_standings(league_code)
     return {"status": "success", "standings": standings}
 
+
 @app.get("/api/scorers/{league_code}")
 @app.get("/api/top_scorers/{league_code}")
 def get_top_scorers_route(league_code: str):
     scorers = db.get_top_scorers(league_code)
     return {"status": "success", "scorers": scorers}
-
-
-
 
 
 @app.get("/api/safe_accumulator/{league_code}")
@@ -408,6 +228,7 @@ def get_safe_accumulator(league_code: str):
         "joint_probability": round(float(joint_prob * 100.0), 1)
     }
 
+
 @app.get("/api/today_matches")
 @app.get("/api/todays_matches")
 def get_todays_matches():
@@ -460,7 +281,6 @@ def get_match_stats_route(league_code: str, match_id: str):
 
 @app.get("/api/news")
 def get_sports_news_route(refresh: bool = False):
-    """مسار استرجاع أحدث 20 خبراً رياضياً بنظام FIFO"""
     try:
         articles = db.sync_and_get_news(force_refresh=refresh)
         return {"status": "success", "count": len(articles), "news": articles}
@@ -499,7 +319,6 @@ class MatchAnalysisRequest(BaseModel):
 
 @app.post("/api/ai_analysis")
 def generate_ai_tactical_analysis(req: MatchAnalysisRequest):
-    """توليد تحليل تكتيكي بشري ممتع بالذكاء الاصطناعي بناءً على أرقام المباراة"""
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
 
     if gemini_key:
@@ -567,7 +386,6 @@ def query_ai_scout(req: ScoutQueryRequest):
         fdr_raw = getattr(db, "get_league_fdr", lambda c: [])(code)
         fdr_list = fdr_raw.get("fdr", []) if isinstance(fdr_raw, dict) else (fdr_raw or [])
 
-
         top_scorers_texts = []
         for s in scorers[:3]:
             if isinstance(s, dict):
@@ -593,8 +411,6 @@ def query_ai_scout(req: ScoutQueryRequest):
                 hardest_texts.append(f"{t_name} (معدل {t_diff})")
         hardest_fdr = ", ".join(hardest_texts) if hardest_texts else "أندية الوسط"
 
-       
-
         league_info = getattr(db, "LEAGUE_CODES", {}).get(code, {})
         league_name = league_info.get("name", "الدوري")
 
@@ -607,7 +423,6 @@ def query_ai_scout(req: ScoutQueryRequest):
 - صدارة الهدافين: {top_3_scorers}
 - أسهل جدول قادم (FDR): {easiest_fdr}
 - أصعب جدول قادم (FDR): {hardest_fdr}
-
 
 أجب باختصار في سطرين إلى 3 أسطر بنصيحة فانتازي مباشرة وعملية."""
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
@@ -643,7 +458,6 @@ def query_ai_scout(req: ScoutQueryRequest):
 
 @app.get("/api/ai_newspaper/{league_code}")
 def get_ai_matchweek_newspaper(league_code: str):
-    """صياغة تقرير صحفي وتحليلي أسبوعي للجولة بالذكاء الاصطناعي بناءً على الأرقام والرادار"""
     try:
         code = league_code or "PL"
         info = getattr(db, "LEAGUE_CODES", {}).get(code, {})
@@ -742,7 +556,7 @@ def get_match_events_route(league_code: str, match_id: str):
         return {"has_events": False, "events": [], "message": str(e)}
 
 
-    # =========================================================================
+# =========================================================================
 # مسار أرشيف وتاريخ الدوريات (مربوط بقاعدة البيانات الرسمية و ESPN)
 # =========================================================================
 @app.get("/api/league_history/{league_code}")
@@ -755,7 +569,8 @@ def get_league_history_route(league_code: str):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-    # =========================================================================
+
+# =========================================================================
 # مسارات استوديو المقارنة الرادارية ومحاكي القمم (Radar Clash Studio API)
 # =========================================================================
 
@@ -764,7 +579,7 @@ class RadarClashRequest(BaseModel):
     team_a_short: str = ""
     league_b: str = "PL"
     team_b_short: str = ""
-    venue: str = "neutral"  # neutral | home_a | home_b
+    venue: str = "neutral"
 
 
 @app.get("/api/radar_teams/{league_code}")
@@ -799,12 +614,12 @@ def simulate_radar_clash(req: RadarClashRequest):
         club_a = find_club(teams_a, req.team_a_short, 0)
         club_b = find_club(teams_b, req.team_b_short, 1 if req.league_a.upper() == req.league_b.upper() else 0)
 
-        # ضبط معامل الأرض بحسب اختيار المستخدم (أرض محايدة أو ملعب أحد الفريقين)
         if req.venue == "home_a":
             sim = compute_fixture_probabilities(
                 home_att=club_a["att"], home_def=club_a["def"],
                 away_att=club_b["att"], away_def=club_b["def"],
                 home_elo=club_a["elo"], away_elo=club_b["elo"],
+                home_form=club_a.get("form"), away_form=club_b.get("form"),
                 home_adv_mult=1.22
             )
             prob_a, prob_draw, prob_b = sim["prob_home"], sim["prob_draw"], sim["prob_away"]
@@ -816,6 +631,7 @@ def simulate_radar_clash(req: RadarClashRequest):
                 home_att=club_b["att"], home_def=club_b["def"],
                 away_att=club_a["att"], away_def=club_a["def"],
                 home_elo=club_b["elo"], away_elo=club_a["elo"],
+                home_form=club_b.get("form"), away_form=club_a.get("form"),
                 home_adv_mult=1.22
             )
             prob_a, prob_draw, prob_b = sim["prob_away"], sim["prob_draw"], sim["prob_home"]
@@ -824,11 +640,11 @@ def simulate_radar_clash(req: RadarClashRequest):
             pred_score = f"{parts[1]} - {parts[0]}" if len(parts) == 2 else sim["most_likely_score"]
             heatmap = [[sim["heatmap"][a][h] for a in range(5)] for h in range(5)]
         else:
-            # أرض محايدة (بدون أفضلية ملعب)
             sim = compute_fixture_probabilities(
                 home_att=club_a["att"], home_def=club_a["def"],
                 away_att=club_b["att"], away_def=club_b["def"],
                 home_elo=club_a["elo"] - 50.0, away_elo=club_b["elo"],
+                home_form=club_a.get("form"), away_form=club_b.get("form"),
                 home_adv_mult=1.04
             )
             prob_a, prob_draw, prob_b = sim["prob_home"], sim["prob_draw"], sim["prob_away"]
@@ -836,7 +652,6 @@ def simulate_radar_clash(req: RadarClashRequest):
             pred_score = sim["most_likely_score"]
             heatmap = sim["heatmap"]
 
-        # توليد قراءة تكتيكية ذكية تقارن محاور الرادار الستة
         ra, rb = club_a["radar"], club_b["radar"]
         adv_a, adv_b = [], []
         axis_names = {
@@ -886,7 +701,8 @@ def simulate_radar_clash(req: RadarClashRequest):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-        # =========================================================================
+
+# =========================================================================
 # مسار منحنى الزخم الهجومي الحي وخريطة التسديدات (Attack Momentum API)
 # =========================================================================
 @app.get("/api/match_momentum/{league_code}/{match_id}")
@@ -897,7 +713,8 @@ def get_match_momentum_route(league_code: str, match_id: str):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-        # =========================================================================
+
+# =========================================================================
 # مسار بورصة الانتقالات وتجديد العقود (Mercato & Contract Renewals API)
 # =========================================================================
 @app.get("/api/mercato")
@@ -913,8 +730,9 @@ def get_mercato_and_contracts_route(refresh: bool = False):
     except Exception as e:
         return {"status": "error", "transfers": [], "contracts": [], "ticker": [], "message": str(e)}
 
-   # =========================================================================
-# مسار ساحة التحدي الكروي الذكي (AI + Context-Aware Live APIs - 6 Rich Categories)
+
+# =========================================================================
+# مسار ساحة التحدي الكروي الذكي
 # =========================================================================
 @app.get("/api/quiz_bank")
 def get_quiz_arena_bank_route(
@@ -947,8 +765,8 @@ def get_quiz_arena_bank_route(
         return {"status": "error", "questions": [], "message": str(e)}
 
 
-        # =========================================================================
-# مسارات غرفة المحللين الأذكياء (AI Pundit Studio API - Pre / Half-Time / Post-Match)
+# =========================================================================
+# مسارات غرفة المحللين الأذكياء (AI Pundit Studio API)
 # =========================================================================
 
 class StudioAskRequest(BaseModel):
@@ -960,7 +778,6 @@ class StudioAskRequest(BaseModel):
 
 @app.get("/api/ai_studio/{league_code}/{match_id}")
 def get_ai_pundit_studio_route(league_code: str, match_id: str, phase: str = "auto"):
-    """جلب الاستوديو التحليلي للمباراة (4 محللين ببيانات حقيقية 100% + Gemini AI)"""
     try:
         data = db.get_ai_pundit_studio_analysis(
             league_code=league_code.upper(),
@@ -974,7 +791,6 @@ def get_ai_pundit_studio_route(league_code: str, match_id: str, phase: str = "au
 
 @app.post("/api/ai_studio_ask")
 def ask_studio_pundit_route(req: StudioAskRequest):
-    """توجيه سؤال مباشر من المشاهد لأحد المحللين الأربعة في الاستوديو"""
     try:
         res = db.ask_studio_pundit_question(
             league_code=req.league_code.upper(),
