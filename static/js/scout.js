@@ -61,8 +61,14 @@ async function executeScoutQuery(userText) {
     });
 
     const data = await res.json();
-    if (data && data.reply) {
-      loadingEl.innerHTML = data.reply.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+   if (data && data.reply) {
+      const safeReply = String(data.reply)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+      loadingEl.innerHTML = safeReply.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
     } else {
       loadingEl.innerText = data.detail || 'تعذر استخراج توصية السكاوت حالياً.';
     }

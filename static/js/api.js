@@ -14,9 +14,7 @@ const BROWSER_CACHE = {
   fixtures: {},
   standings: {},
   scorers: {},
-  
-  projections: {},
-  fdr: {}
+  projections: {}
 };
 
 // دالة جلب مرنة تدعم إعادة المحاولة التلقائية عند بطء الاتصال

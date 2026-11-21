@@ -2,6 +2,15 @@
 // DeepPitch Pro - Views, Navigation & League Rules Engine
 // =========================================================
 
+function escapeHtml(str) {
+  return String(str !== undefined && str !== null ? str : '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 // محرك القواعد التنظيمية الدقيق لكل بطولة (المقاعد الأوروبية، الملحق، الهبوط، ونظام دوري الأبطال)
 const LEAGUE_RULES_ENGINE = {
   'PL': {
@@ -228,6 +237,26 @@ const LEAGUE_RULES_ENGINE = {
 
 };
 
+window._viewReqToken = 0;
+
+function formatLocalKickoff(isoStr, fallbackText, onlyTime = false) {
+  if (!isoStr) return fallbackText || '';
+  try {
+    const dt = new Date(isoStr);
+    if (isNaN(dt.getTime())) return fallbackText || '';
+    if (onlyTime) {
+      return dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const d = String(dt.getDate()).padStart(2, '0');
+    const t = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    return `${y}-${m}-${d} ${t}`;
+  } catch (e) {
+    return fallbackText || '';
+  }
+}
+
 function getLeagueRulesConfig(leagueCode) {
   const code = (leagueCode || 'PL').toUpperCase();
   return LEAGUE_RULES_ENGINE[code] || LEAGUE_RULES_ENGINE['PL'];
@@ -236,41 +265,90 @@ function getLeagueRulesConfig(leagueCode) {
 // =========================================================
 // 1. إدارة التنقل بين الشاشات الرئيسية
 // =========================================================
-function activateSection(section) {
+// =========================================================
+// 1. إدارة التنقل الموحّد (5 بوابات + Hash Router + البحث السريع + Skeleton)
+// =========================================================
+const DP_SECTION_TO_PILLAR = {
+  'today': 'today',
+  'fixtures': 'competitions',
+  'standings': 'competitions',
+  'projections': 'competitions',
+  'history': 'competitions',
+  'transfers': 'media',
+  'news': 'media',
+  'cards': 'explore',
+  'radar': 'explore',
+  'quiz': 'quiz'
+};
+
+const DP_PILLAR_LAST_SUB = {
+  'today': 'today',
+  'competitions': 'fixtures',
+  'media': 'transfers',
+  'explore': 'cards',
+  'quiz': 'quiz'
+};
+
+function renderSkeletonCardsHtml(count = 4) {
+  return Array.from({ length: count }).map(() => `
+    <div class="dp-skel-card">
+      <div style="display:flex; justify-content:space-between; gap:10px;">
+        <div class="dp-skel" style="height:14px; width:42%;"></div>
+        <div class="dp-skel" style="height:18px; width:24%; border-radius:99px;"></div>
+      </div>
+      <div style="display:flex; justify-content:space-around; align-items:center; padding:10px 0;">
+        <div class="dp-skel" style="width:46px; height:46px; border-radius:14px;"></div>
+        <div class="dp-skel" style="width:68px; height:34px; border-radius:10px;"></div>
+        <div class="dp-skel" style="width:46px; height:46px; border-radius:14px;"></div>
+      </div>
+      <div class="dp-skel" style="height:8px; width:100%; border-radius:99px;"></div>
+      <div class="dp-skel" style="height:30px; width:100%; border-radius:10px;"></div>
+    </div>
+  `).join('');
+}
+
+function navigateToPillar(pillarKey) {
+  const targetSection = DP_PILLAR_LAST_SUB[pillarKey] || 'today';
+  activateSection(targetSection);
+}
+
+function activateSection(section, fromHash = false) {
+  const validViews = ['today', 'fixtures', 'standings', 'projections', 'history', 'transfers', 'news', 'cards', 'radar', 'quiz'];
+  if (!validViews.includes(section)) section = 'today';
+
+  const pillar = DP_SECTION_TO_PILLAR[section] || 'today';
+  DP_PILLAR_LAST_SUB[pillar] = section;
+
   window.activeSection = section;
   if (typeof activeSection !== 'undefined') activeSection = section;
 
-  const hubGrid = document.getElementById('hub-grid-container');
-  if (hubGrid) hubGrid.style.display = 'none';
-
-  const welcome = document.getElementById('welcome-placeholder');
-  if (welcome) welcome.style.display = 'none';
-
-  const backBar = document.getElementById('mobile-back-bar');
-  const viewTitle = document.getElementById('mobile-view-title');
-  if (backBar) {
-    backBar.style.display = 'flex';
-    const sectionTitles = {
-      'fixtures': '📅 مباريات الجولة والرادار',
-      'today': '🔴 مباريات اليوم المباشرة',
-      'standings': '🏆 جدول الترتيب والهدافين',
-      'projections': '🔮 محاكي نهاية الموسم',
-      'fdr': '🗓️ صعوبة المباريات (FDR)',
-      'news': '📰 غرفة الأخبار الرياضية',
-      'history': '🏛️ موسوعة وأرشيف الدوريات',
-      'radar': '🕸️ استوديو المقارنة الرادارية ومحاكي القمم',
-      'transfers': '💼 بورصة الانتقالات وتجديد العقود',
-      'quiz': '🎮 ساحة التحدي الكروي التفاعلي'
-    };
-    if (viewTitle) viewTitle.innerText = sectionTitles[section] || 'عرض النتائج';
+  // تحديث رابط المتصفح ليعمل زر الرجوع في الجوال والكمبيوتر بشكل طبيعي
+  if (!fromHash && window.location.hash !== `#${section}`) {
+    try { history.pushState({ section }, '', `#${section}`); } catch (e) { window.location.hash = section; }
   }
 
-  const mainMenu = document.getElementById('main-menu-section');
-  const needsLeague = ['fixtures', 'standings', 'projections', 'fdr', 'history'].includes(section);
-  if (mainMenu) mainMenu.style.display = needsLeague ? 'block' : 'none';
+  // مزامنة الشريط العلوي للكمبيوتر والشريط السفلي للجوال
+  document.querySelectorAll('#dp-desktop-nav .dp-nav-pill').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-pillar') === pillar);
+  });
+  if (typeof window.syncMobileBottomNav === 'function') window.syncMobileBottomNav(pillar);
 
-  const allViews = ['fixtures', 'today', 'standings', 'projections', 'fdr', 'news', 'history', 'radar', 'transfers','quiz'];
-  allViews.forEach(v => {
+  // إظهار/إخفاء التبويبات الفرعية لكل بوابة
+  const compShell = document.getElementById('competitions-shell');
+  const mediaSub = document.getElementById('media-subtabs');
+  const exploreSub = document.getElementById('explore-subtabs');
+  const smartBar = document.getElementById('smart-tools-bar');
+
+  if (compShell) compShell.style.display = (pillar === 'competitions') ? 'block' : 'none';
+  if (mediaSub) mediaSub.style.display = (pillar === 'media') ? 'flex' : 'none';
+  if (exploreSub) exploreSub.style.display = (pillar === 'explore') ? 'flex' : 'none';
+  if (smartBar) smartBar.style.display = (section === 'fixtures') ? 'flex' : 'none';
+
+  document.querySelectorAll('.dp-subtab-btn[data-sub]').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-sub') === section);
+  });
+
+  validViews.forEach(v => {
     const el = document.getElementById(`${v}-view`);
     if (el) el.style.display = (v === section) ? 'block' : 'none';
   });
@@ -279,8 +357,11 @@ function activateSection(section) {
     clearTimeout(todayPollingTimeout);
     todayPollingTimeout = null;
   }
+  if (section !== 'quiz' && typeof stopQuizTimer === 'function') {
+    stopQuizTimer();
+  }
 
-  window.scrollTo(0, 0);
+  window.scrollTo({ top: 0, behavior: 'instant' });
 
   const league = (typeof activeLeague !== 'undefined' && activeLeague) ? activeLeague : 'PL';
   if (section === 'today') loadTodayMatches();
@@ -288,7 +369,7 @@ function activateSection(section) {
   else if (section === 'fixtures') loadGameweek(league);
   else if (section === 'standings') loadOfficialStandingsAndScorers(league);
   else if (section === 'projections') loadProjections(league);
-  else if (section === 'fdr') loadFDR(league);
+  else if (section === 'cards') loadCardsHub();
   else if (section === 'history') loadLeagueHistory(league);
   else if (section === 'radar') initRadarClashStudio();
   else if (section === 'transfers') loadMercatoHub();
@@ -296,49 +377,131 @@ function activateSection(section) {
 }
 
 function goBackToMainMenu() {
-  const allViews = ['fixtures', 'today', 'standings', 'projections', 'fdr', 'news', 'history', 'radar', 'transfers','quiz'];
-  allViews.forEach(v => {
-    const el = document.getElementById(`${v}-view`);
-    if (el) el.style.display = 'none';
-  });
-
-  const mainMenu = document.getElementById('main-menu-section');
-  if (mainMenu) mainMenu.style.display = 'none';
-
-  const backBar = document.getElementById('mobile-back-bar');
-  if (backBar) backBar.style.display = 'none';
-
-  const hubGrid = document.getElementById('hub-grid-container');
-  if (hubGrid) hubGrid.style.display = 'grid';
-
-  const welcome = document.getElementById('welcome-placeholder');
-  if (welcome) welcome.style.display = 'block';
-
-  document.querySelectorAll('.hub-card').forEach(c => c.classList.remove('active'));
-
-  if (typeof todayPollingTimeout !== 'undefined' && todayPollingTimeout) {
-    clearTimeout(todayPollingTimeout);
-    todayPollingTimeout = null;
-  }
-
-  window.scrollTo(0, 0);
+  navigateToPillar('today');
 }
 
 function refreshCurrentView(forceRefresh = true) {
   const league = (typeof activeLeague !== 'undefined' && activeLeague) ? activeLeague : 'PL';
-  const sec = window.activeSection || (typeof activeSection !== 'undefined' ? activeSection : 'fixtures');
-
+  const sec = window.activeSection || 'today';
   if (sec === 'fixtures') loadGameweek(league, forceRefresh);
-  else if (sec === 'standings') loadOfficialStandingsAndScorers(league);
-  else if (sec === 'projections') loadProjections(league);
-  else if (sec === 'fdr') loadFDR(league);
+  else if (sec === 'standings') loadOfficialStandingsAndScorers(league, forceRefresh);
+  else if (sec === 'projections') loadProjections(league, forceRefresh);
+  else if (sec === 'cards') loadCardsHub(forceRefresh);
   else if (sec === 'today') loadTodayMatches();
-  else if (sec === 'news') loadNewsFeed(true);
-  else if (sec === 'history') loadLeagueHistory(league);
+  else if (sec === 'news') loadNewsFeed(forceRefresh);
+  else if (sec === 'history') loadLeagueHistory(league, forceRefresh);
   else if (sec === 'radar') initRadarClashStudio();
   else if (sec === 'transfers') loadMercatoHub(true);
   else if (sec === 'quiz') loadQuizArena(true);
 }
+
+// =========================================================
+// البحث العالمي السريع (Global Quick Search)
+// =========================================================
+window.openGlobalSearchModal = function() {
+  const modal = document.getElementById('global-search-modal');
+  const inp = document.getElementById('dp-global-search-input');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+  if (inp) { inp.value = ''; inp.focus(); }
+  runGlobalQuickSearch('');
+};
+
+window.runGlobalQuickSearch = function(query) {
+  const box = document.getElementById('dp-global-search-results');
+  if (!box) return;
+  const q = (query || '').trim().toLowerCase();
+  if (q.length < 2) {
+    box.innerHTML = '<div style="text-align:center; padding:24px 10px; color:var(--muted); font-size:0.84rem;">اكتب حرفين على الأقل للبحث في المباريات، الأندية، الأخبار، والانتقالات</div>';
+    return;
+  }
+
+  const hits = [];
+
+  (window.currentTodayMatches || []).forEach((m, idx) => {
+    if (`${m.home_team} ${m.away_team} ${m.league_name}`.toLowerCase().includes(q)) {
+      hits.push({
+        badge: m.is_live ? 'مباشر' : 'اليوم',
+        title: `${m.home_team} ضد ${m.away_team}`,
+        sub: `${m.league_name} • ${m.status_text}`,
+        action: `closeModal('global-search-modal'); activateSection('today'); openTodayMatchModal(${idx});`
+      });
+    }
+  });
+
+  (window.currentFixtures || []).forEach((f, idx) => {
+    if (`${f.home.name} ${f.home.short} ${f.away.name} ${f.away.short}`.toLowerCase().includes(q)) {
+      hits.push({
+        badge: 'الجولة',
+        title: `${f.home.short} vs ${f.away.short}`,
+        sub: `توقع ${f.predicted_score} • ${f.edge.label}`,
+        action: `closeModal('global-search-modal'); activateSection('fixtures'); openModal(${idx});`
+      });
+    }
+  });
+
+  ((window._mercatoState && window._mercatoState.transfersList) || []).forEach(t => {
+    if (`${t.name} ${t.from_club} ${t.to_club}`.toLowerCase().includes(q)) {
+      hits.push({
+        badge: 'انتقال',
+        title: t.name,
+        sub: `${t.from_club} ⬅️ ${t.to_club} (${t.status_label})`,
+        action: `closeModal('global-search-modal'); activateSection('transfers'); openMercatoDetailModal('transfers', '${escapeHtml(t.id)}');`
+      });
+    }
+  });
+
+  (currentNewsItems || []).forEach((n, idx) => {
+    if (`${n.title} ${n.summary}`.toLowerCase().includes(q)) {
+      hits.push({
+        badge: 'خبر',
+        title: n.title,
+        sub: n.published_time || 'غرفة الأخبار',
+        action: `closeModal('global-search-modal'); openNewsArticle(${idx});`
+      });
+    }
+  });
+
+  if (hits.length === 0) {
+    box.innerHTML = `
+      <div class="dp-empty-state" style="padding:22px;">
+        <div style="font-size:0.86rem;">لم نجد نتائج محملة لـ "${escapeHtml(query)}"</div>
+        <button type="button" class="ai-btn" onclick="closeModal('global-search-modal'); window._cardsHubState.searchQuery='${escapeHtml(query).replace(/'/g, '')}'; activateSection('cards');">
+          البحث في موسوعة البطاقات ⬅️
+        </button>
+      </div>
+    `;
+    return;
+  }
+
+  box.innerHTML = hits.slice(0, 12).map(h => `
+    <div class="dp-search-item" onclick="${h.action}">
+      <div style="min-width:0; flex:1;">
+        <div style="font-weight:800; font-size:0.86rem; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(h.title)}</div>
+        <div style="font-size:0.74rem; color:var(--muted); margin-top:2px;">${escapeHtml(h.sub)}</div>
+      </div>
+      <span class="hub-badge">${escapeHtml(h.badge)}</span>
+    </div>
+  `).join('');
+};
+
+// تفعيل التوجيه بالرابط وزر الرجوع التلقائي عند فتح الموقع
+window.addEventListener('hashchange', () => {
+  const openModalEl = Array.from(document.querySelectorAll('.modal-overlay')).find(m => m.style.display === 'flex');
+  if (openModalEl) {
+    openModalEl.style.display = 'none';
+    document.body.style.overflow = '';
+    return;
+  }
+  const sec = (window.location.hash || '#today').replace('#', '');
+  if (sec && sec !== window.activeSection) activateSection(sec, true);
+});
+
+window.addEventListener('DOMContentLoaded', () => {
+  const initialSec = (window.location.hash || '#today').replace('#', '');
+  setTimeout(() => activateSection(initialSec || 'today', true), 60);
+});
 // =========================================================
 // 2. عرض كروت مباريات الجولة والرادار التكتيكي
 // =========================================================
@@ -352,9 +515,9 @@ function renderFixturesList(fixtures) {
   }
 
   container.innerHTML = fixtures.map((f, idx) => `
-    <div class="fixture-card" onclick="openModal(${idx})">
+    <div class="fixture-card" data-match-id="${f.fixture_id}" onclick="openModal(${idx})">
       <div class="fixture-header">
-        <span>الجولة ${f.gameweek} • 🕒 ${f.kickoff_time}</span>
+     <span>الجولة ${f.gameweek} • 🕒 ${formatLocalKickoff(f.kickoff_iso, f.kickoff_time, false)}</span>
         <span class="radar-pill" style="background: ${f.edge.color}20; color: ${f.edge.color}; border: 1px solid ${f.edge.color};">
           ${f.edge.label}
         </span>
@@ -408,11 +571,13 @@ function renderFixturesList(fixtures) {
       </div>
     </div>
   `).join('');
+  if (typeof window.refreshFavoriteStarsAndSorting === 'function') window.refreshFavoriteStarsAndSorting();
 }
 
 async function loadGameweek(leagueCode, forceRefresh = false) {
   const container = document.getElementById('fixtures-container');
   if (!container) return;
+  const reqToken = ++window._viewReqToken;
 
   if (!forceRefresh && typeof BROWSER_CACHE !== 'undefined' && BROWSER_CACHE.fixtures && BROWSER_CACHE.fixtures[leagueCode] && BROWSER_CACHE.fixtures[leagueCode].length > 0) {
     window.currentFixtures = BROWSER_CACHE.fixtures[leagueCode];
@@ -420,11 +585,12 @@ async function loadGameweek(leagueCode, forceRefresh = false) {
     return;
   }
 
-  container.innerHTML = '<div class="loading-state">جاري فحص مؤشرات الصدمة ورادار التعثر...</div>';
+  container.innerHTML = renderSkeletonCardsHtml(6);
 
   try {
-    const res = await fetch(`/api/gameweek/${leagueCode}`);
+    const res = await fetch(`/api/gameweek/${leagueCode}?refresh=${forceRefresh}`);
     const data = await res.json();
+    if (reqToken !== window._viewReqToken) return;
     window.currentFixtures = data.fixtures || [];
     if (typeof BROWSER_CACHE !== 'undefined' && window.currentFixtures.length > 0) {
       BROWSER_CACHE.fixtures[leagueCode] = window.currentFixtures;
@@ -443,6 +609,175 @@ async function loadGameweek(leagueCode, forceRefresh = false) {
 // =========================================================
 // 3. مباريات اليوم المباشرة
 // =========================================================
+window._todayStatusFilter = 'ALL';
+
+window.setTodayStatusFilter = function(filterKey) {
+  window._todayStatusFilter = filterKey;
+  renderTodayMatchesGrouped(window.currentTodayMatches || []);
+};
+
+function renderTodayMatchCardHtml(m, origIdx) {
+  const isFav = typeof window.isClubFavoritePublic === 'function' &&
+    (window.isClubFavoritePublic(m.home_team) || window.isClubFavoritePublic(m.away_team));
+
+  return `
+    <div class="today-card ${m.is_live ? 'live-match' : ''} ${isFav ? 'dp-fav-match-card' : ''}" data-match-id="${escapeHtml(m.id)}" onclick="openTodayMatchModal(${origIdx})">
+      <div class="today-header">
+        <span>${m.league_flag || '⚽'} ${escapeHtml(m.league_name)}</span>
+        ${m.is_live
+          ? `<span class="live-badge"><span class="live-dot-pulse"></span> ${escapeHtml(m.status_text)}</span>`
+          : `<span style="color:var(--muted);">${escapeHtml(m.status_text)} • ${formatLocalKickoff(m.kickoff_iso, m.kickoff_time, true)}</span>`}
+      </div>
+
+      <div class="today-body">
+        <div class="today-team">
+          <img src="${escapeHtml(m.home_crest)}" width="42" height="42" alt="" onerror="this.src='https://via.placeholder.com/42?text=FC'">
+          <div style="font-weight:800; font-size:0.88rem; display:flex; align-items:center; gap:3px; justify-content:center;">
+            <span>${escapeHtml(m.home_team)}</span>
+            <button type="button" class="dp-fav-star-btn ${typeof window.isClubFavoritePublic === 'function' && window.isClubFavoritePublic(m.home_team) ? 'is-fav' : ''}" onclick="window.toggleFavoriteClub('${escapeHtml(m.home_team).replace(/'/g, '')}', event)" title="إضافة للمفضلة">${typeof window.isClubFavoritePublic === 'function' && window.isClubFavoritePublic(m.home_team) ? '⭐' : '☆'}</button>
+          </div>
+        </div>
+
+        <div class="today-score-box">
+          ${m.state === 'pre'
+            ? `<div style="font-size:1rem; color:var(--accent-gold-bright);">${formatLocalKickoff(m.kickoff_iso, m.kickoff_time, true)}</div>`
+            : `<span style="color:${m.is_live ? 'var(--accent-red)' : 'var(--text)'}; font-size:1.25rem; font-weight:900;">${escapeHtml(m.home_score)} - ${escapeHtml(m.away_score)}</span>`}
+        </div>
+
+        <div class="today-team">
+          <img src="${escapeHtml(m.away_crest)}" width="42" height="42" alt="" onerror="this.src='https://via.placeholder.com/42?text=FC'">
+          <div style="font-weight:800; font-size:0.88rem; display:flex; align-items:center; gap:3px; justify-content:center;">
+            <span>${escapeHtml(m.away_team)}</span>
+            <button type="button" class="dp-fav-star-btn ${typeof window.isClubFavoritePublic === 'function' && window.isClubFavoritePublic(m.away_team) ? 'is-fav' : ''}" onclick="window.toggleFavoriteClub('${escapeHtml(m.away_team).replace(/'/g, '')}', event)" title="إضافة للمفضلة">${typeof window.isClubFavoritePublic === 'function' && window.isClubFavoritePublic(m.away_team) ? '⭐' : '☆'}</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="today-meta">
+        <div>🏟️ <strong>الملعب:</strong> ${escapeHtml(m.venue)}</div>
+        <div>📺 <strong>القناة:</strong> ${escapeHtml(m.channel)}</div>
+        <div style="grid-column: 1/-1;">🎙️ <strong>المعلق:</strong> ${escapeHtml(m.commentator)}</div>
+      </div>
+
+      <div style="text-align:center; font-size:0.74rem; color:var(--accent-green); font-weight:700; margin-top:10px; border-top:1px solid var(--card-border); padding-top:8px;">
+        فتح مركز المباراة: الإحصائيات • الزخم والتسديدات • المحللين • التشكيلة
+      </div>
+    </div>
+  `;
+}
+
+function renderTodayMatchesGrouped(matches) {
+  const container = document.getElementById('today-matches-container');
+  if (!container) return;
+
+  if (!matches || matches.length === 0) {
+    container.innerHTML = `
+      <div class="dp-empty-state" style="grid-column:1/-1;">
+        <div style="font-size:1.8rem;">⚽</div>
+        <div style="font-weight:800; color:var(--text);">لا توجد مباريات مجدولة لليوم في البطولات المدعومة</div>
+        <button type="button" class="ai-btn" onclick="navigateToPillar('competitions')">استعراض مباريات الجولة القادمة ⬅️</button>
+      </div>
+    `;
+    return;
+  }
+
+  const indexed = matches.map((m, idx) => ({ m, idx }));
+  const liveCount = indexed.filter(x => x.m.is_live).length;
+  const preCount = indexed.filter(x => x.m.state === 'pre').length;
+  const postCount = indexed.filter(x => x.m.state === 'post').length;
+  const favItems = indexed.filter(x =>
+    typeof window.isClubFavoritePublic === 'function' &&
+    (window.isClubFavoritePublic(x.m.home_team) || window.isClubFavoritePublic(x.m.away_team))
+  );
+
+  const curFilter = window._todayStatusFilter || 'ALL';
+  const pills = [
+    { key: 'ALL', label: `الكل (${indexed.length})` },
+    { key: 'LIVE', label: `🔴 مباشر (${liveCount})` },
+    { key: 'PRE', label: `قادمة (${preCount})` },
+    { key: 'POST', label: `انتهت (${postCount})` }
+  ];
+  if (favItems.length > 0) {
+    pills.splice(1, 0, { key: 'FAV', label: `⭐ المفضلة (${favItems.length})` });
+  }
+
+  let filtered = indexed;
+  if (curFilter === 'LIVE') filtered = indexed.filter(x => x.m.is_live);
+  else if (curFilter === 'PRE') filtered = indexed.filter(x => x.m.state === 'pre');
+  else if (curFilter === 'POST') filtered = indexed.filter(x => x.m.state === 'post');
+  else if (curFilter === 'FAV') filtered = favItems;
+
+  const filterBarHtml = `
+    <div class="dp-h-scroll-bar" style="grid-column:1/-1; margin-bottom:4px;">
+      ${pills.map(p => `
+        <button type="button" class="q-chip-item ${curFilter === p.key ? 'active' : ''}" onclick="setTodayStatusFilter('${p.key}')">
+          ${p.label}
+        </button>
+      `).join('')}
+    </div>
+  `;
+
+  if (filtered.length === 0) {
+    container.innerHTML = filterBarHtml + `
+      <div class="dp-empty-state" style="grid-column:1/-1;">
+        <div>لا توجد مباريات مطابقة لهذا الفلتر حالياً.</div>
+        <button type="button" class="retry-btn" onclick="setTodayStatusFilter('ALL')">عرض جميع مباريات اليوم</button>
+      </div>
+    `;
+    return;
+  }
+
+  let groupsHtml = '';
+
+  // تثبيت أنديتك المفضلة في مجموعة مميزة في الأعلى عند عرض "الكل"
+  const shownFavIds = new Set();
+  if (curFilter === 'ALL' && favItems.length > 0) {
+    favItems.forEach(x => shownFavIds.add(x.m.id));
+    groupsHtml += `
+      <div class="dp-match-group" style="grid-column:1/-1;">
+        <div class="dp-match-group-hdr" style="border-right:3px solid var(--accent-gold);">
+          <span>⭐ مباريات أنديتك المفضلة</span>
+          <span class="hub-badge">${favItems.length}</span>
+        </div>
+        <div class="today-grid">
+          ${favItems.map(x => renderTodayMatchCardHtml(x.m, x.idx)).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  // تجميع بقية المباريات حسب البطولة
+  const byLeague = new Map();
+  filtered.forEach(item => {
+    if (curFilter === 'ALL' && shownFavIds.has(item.m.id)) return;
+    const key = item.m.league_name || 'بطولات أخرى';
+    if (!byLeague.has(key)) {
+      byLeague.set(key, { flag: item.m.league_flag || '⚽', name: key, items: [] });
+    }
+    byLeague.get(key).items.push(item);
+  });
+
+  byLeague.forEach(grp => {
+    const liveInGrp = grp.items.filter(x => x.m.is_live).length;
+    groupsHtml += `
+      <div class="dp-match-group" style="grid-column:1/-1;">
+        <div class="dp-match-group-hdr">
+          <span>${grp.flag} ${escapeHtml(grp.name)}</span>
+          <div style="display:flex; align-items:center; gap:6px;">
+            ${liveInGrp > 0 ? `<span class="live-badge" style="padding:2px 8px; font-size:0.68rem;"><span class="live-dot-pulse"></span> ${liveInGrp} مباشر</span>` : ''}
+            <span class="hub-badge">${grp.items.length}</span>
+          </div>
+        </div>
+        <div class="today-grid">
+          ${grp.items.map(x => renderTodayMatchCardHtml(x.m, x.idx)).join('')}
+        </div>
+      </div>
+    `;
+  });
+
+  container.innerHTML = filterBarHtml + groupsHtml;
+}
+
 async function loadTodayMatches() {
   const container = document.getElementById('today-matches-container');
   const dateTxt = document.getElementById('today-date-txt');
@@ -450,61 +785,35 @@ async function loadTodayMatches() {
   if (dateTxt) dateTxt.innerText = now.toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   if (!container) return;
 
+  // عرض الهياكل العظمية في أول تحميل فقط لمنع الوميض أثناء التحديث التلقائي
+  if (!window.currentTodayMatches || window.currentTodayMatches.length === 0) {
+    container.innerHTML = renderSkeletonCardsHtml(4);
+  }
+
   try {
     const res = await fetch('/api/todays_matches');
     const data = await res.json();
     const matches = data.matches || [];
     window.currentTodayMatches = matches;
 
+    if (typeof window.checkLiveScoreNotifications === 'function') {
+      window.checkLiveScoreNotifications(matches);
+    }
+
+    renderTodayMatchesGrouped(matches);
+
     if (matches.length === 0) {
-      container.innerHTML = '<div class="loading-state" style="grid-column: 1/-1;">لا توجد مباريات مجدولة لليوم في البطولات المدعومة.</div>';
-      scheduleNextPoll(300000, "لا توجد مباريات - فحص دوري كل 5 دقائق");
+      scheduleNextPoll(300000, 'لا توجد مباريات اليوم - فحص كل 5 دقائق');
       return;
     }
 
-    container.innerHTML = matches.map((m, idx) => `
-      <div class="today-card ${m.is_live ? 'live-match' : ''}" onclick="openTodayMatchModal(${idx})" style="cursor: pointer; transition: transform 0.2s;">
-        <div class="today-header">
-          <span>${m.league_flag || '⚽'} ${m.league_name}</span>
-          ${m.is_live 
-            ? `<span class="live-badge"><span class="live-dot-pulse"></span> ${m.status_text}</span>` 
-            : `<span style="color:var(--muted);">${m.status_text} • 🕒 ${m.kickoff_time}</span>`}
-        </div>
-
-        <div class="today-body">
-          <div class="today-team">
-            <img src="${m.home_crest}" width="44" height="44" onerror="this.src='https://via.placeholder.com/44?text=FC'">
-            <div style="font-weight:800; font-size:0.92rem;">${m.home_team}</div>
-          </div>
-
-          <div class="today-score-box">
-            ${m.state === 'pre' 
-              ? `<div style="font-size:1.05rem; color:var(--accent-gold);">${m.kickoff_time}</div>` 
-              : `<span style="color:${m.is_live ? '#ff5252' : 'var(--text)'}; font-size:1.25rem; font-weight:900;">${m.home_score} - ${m.away_score}</span>`}
-          </div>
-
-          <div class="today-team">
-            <img src="${m.away_crest}" width="44" height="44" onerror="this.src='https://via.placeholder.com/44?text=FC'">
-            <div style="font-weight:800; font-size:0.92rem;">${m.away_team}</div>
-          </div>
-        </div>
-
-        <div class="today-meta">
-          <div>🏟️ <strong>الملعب:</strong> ${m.venue}</div>
-          <div>📺 <strong>القناة:</strong> ${m.channel}</div>
-          <div style="grid-column: 1/-1;">🎙️ <strong>المعلق:</strong> ${m.commentator}</div>
-        </div>
-
-       <div style="text-align:center; font-size:0.75rem; color:var(--accent-gold); font-weight:800; margin-top:10px; border-top:1px dashed #1e293b; padding-top:8px;">
-          🎙️ انقر لدخول استوديو المحللين الأربعة والإحصائيات والتشكيلة
-        </div>
-      </div>
-    `).join('');
-
     const hasLiveMatch = matches.some(m => m.is_live);
-    scheduleNextPoll(hasLiveMatch ? 35000 : 300000, hasLiveMatch ? "مباراة جارية - تحديث مباشر كل 35 ثانية" : "المباريات مجدولة أو منتهية - تحديث هادئ كل 5 دقائق");
+    scheduleNextPoll(
+      hasLiveMatch ? 35000 : 300000,
+      hasLiveMatch ? 'مباراة جارية - تحديث كل 35 ثانية' : 'تحديث هادئ كل 5 دقائق'
+    );
   } catch (e) {
-    scheduleNextPoll(60000, "تعذر التحديث - إعادة المحاولة بعد دقيقة");
+    scheduleNextPoll(60000, 'تعذر التحديث - إعادة المحاولة بعد دقيقة');
   }
 }
 
@@ -607,7 +916,7 @@ function renderStandingsTableRows(standings, leagueCode) {
   });
 
   if (filtered.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="11" class="loading-state">لا تتوفر بيانات ترتيب حالياً لهذا الاختيار.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="loading-state">لا تتوفر بيانات ترتيب حالياً لهذا الاختيار.</td></tr>';
     return;
   }
 
@@ -684,19 +993,21 @@ function renderStandingsTableRows(standings, leagueCode) {
           ${t.gd > 0 ? '+' : ''}${t.gd}
         </td>
         <td style="font-weight:900; color:var(--accent-gold); font-size:1.05rem;">${t.points}</td>
-        <td class="col-hide-mobile-sm">
+        <td>
           <div style="display:flex; gap:3px;">
-            ${(t.form || []).map(f => `<span class="badge-f form-${f.toLowerCase()}">${f}</span>`).join('')}
+            ${(t.form || []).map(f => `<span class="badge-f form-${escapeHtml(f).toLowerCase()}">${escapeHtml(f)}</span>`).join('')}
           </div>
         </td>
       </tr>
     `);
   });
 
-  tbody.innerHTML = rowsHtml.join('');
+ tbody.innerHTML = rowsHtml.join('');
+  if (typeof window.refreshFavoriteStarsAndSorting === 'function') window.refreshFavoriteStarsAndSorting();
 }
 
-async function loadOfficialStandingsAndScorers(leagueCode) {
+async function loadOfficialStandingsAndScorers(leagueCode, forceRefresh = false) {
+  const reqToken = ++window._viewReqToken;
   const tbody = document.getElementById('official-standings-tbody') || document.getElementById('standings-tbody');
   const scorersList = document.getElementById('top-scorers-list') || document.getElementById('scorers-tbody');
   const rules = getLeagueRulesConfig(leagueCode);
@@ -712,7 +1023,7 @@ async function loadOfficialStandingsAndScorers(leagueCode) {
   }
 
   if (tbody) {
-    tbody.innerHTML = '<tr><td colspan="11" class="loading-state">جاري سحب الترتيب الرسمي المباشر من الـ API...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="loading-state">جاري سحب الترتيب الرسمي المباشر من الـ API...</td></tr>';
   }
   if (scorersList) {
     scorersList.innerHTML = '<div class="loading-state">جاري سحب قائمة الهدافين...</div>';
@@ -720,12 +1031,13 @@ async function loadOfficialStandingsAndScorers(leagueCode) {
 
   try {
     const [sRes, scRes] = await Promise.all([
-      fetch(`/api/official_standings/${leagueCode}`),
-      fetch(`/api/top_scorers/${leagueCode}`)
+      fetch(`/api/official_standings/${leagueCode}?refresh=${forceRefresh}`),
+      fetch(`/api/top_scorers/${leagueCode}?refresh=${forceRefresh}`)
     ]);
 
     const sData = await sRes.json();
     const scData = await scRes.json();
+    if (reqToken !== window._viewReqToken) return;
 
     const standings = sData.standings || (Array.isArray(sData) ? sData : []);
     const scorers = scData.scorers || (Array.isArray(scData) ? scData : []);
@@ -765,7 +1077,7 @@ async function loadOfficialStandingsAndScorers(leagueCode) {
       }
     }
   } catch (e) {
-    if (tbody) tbody.innerHTML = '<tr><td colspan="11" class="loading-state" style="color:var(--accent-red);">تعذر جلب بيانات الترتيب.</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="10" class="loading-state" style="color:var(--accent-red);">تعذر جلب بيانات الترتيب.</td></tr>';
   }
 }
 
@@ -844,8 +1156,8 @@ let filterWrap = document.getElementById('proj-group-filter-bar');
             <strong>${row.name}</strong>
           </div>
         </td>
-        <td>${row.played}</td>
-        <td class="col-hide-mobile">${row.current_pts}</td>
+     <td>${row.played}</td>
+        <td style="font-weight:800; color:#e2e8f0;">${row.current_pts}</td>
         <td style="font-weight:900; font-size:1.02rem; color:var(--accent-green);">${row.projected_pts}</td>
         <td>
           ${row.champ_pct > 0.1 
@@ -869,9 +1181,11 @@ let filterWrap = document.getElementById('proj-group-filter-bar');
   tbody.innerHTML = rowsHtml.join('');
 }
 
-async function loadProjections(leagueCode) {
+async function loadProjections(leagueCode, forceRefresh = false) {
   const tbody = document.getElementById('projections-tbody');
   if (!tbody) return;
+  const reqToken = ++window._viewReqToken;
+  
 
   const rules = getLeagueRulesConfig(leagueCode);
   window._activeGroupFilter = 'ALL';
@@ -888,9 +1202,10 @@ async function loadProjections(leagueCode) {
 
   tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:35px; color:var(--muted);">جاري تشغيل محاكي مونت كارلو ومحاكاة 1,500 موسم افتراضي...</td></tr>';
 
-  try {
-    const res = await fetch(`/api/season_projections/${leagueCode}`);
+try {
+    const res = await fetch(`/api/season_projections/${leagueCode}?refresh=${forceRefresh}`);
     const data = await res.json();
+    if (reqToken !== window._viewReqToken) return;
     let dataList = data.projections || [];
 
     window._cachedProjData = dataList;
@@ -901,53 +1216,744 @@ async function loadProjections(leagueCode) {
 }
 
 
-// =========================================================
-// 6. مصفوفة صعوبة المباريات (FDR)
-// =========================================================
-async function loadFDR(leagueCode) {
-  const tbody = document.getElementById('fdr-tbody');
-  if (!tbody) return;
 
-  tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:35px; color:var(--muted);">جاري بناء مصفوفة صعوبة المباريات الخمس القادمة...</td></tr>';
+// =========================================================
+// 6. محرك مركز البطاقات الشامل (100% Live API: Clubs, Top 100 Nations & Players)
+// =========================================================
+// =========================================================
+// 6. محرك مركز البطاقات التفاعلي الشامل (100% Live API)
+//    1) المنتخبات (5 قارات ⬅️ منتخبات القارة ⬅️ صندوق الألقاب والأساطير)
+//    2) الأندية (الدوري ⬅️ أندية الدوري ⬅️ صندوق البطولات والأساطير)
+//    3) اللاعبون بنظام FIFA Cards (الدوري ⬅️ الـ 20 نادياً ⬅️ لاعبو النادي ⬅️ بطاقة اللاعب)
+// =========================================================
+
+window._cardsHubState = {
+  subPortal: 'nations',        // 'nations' | 'clubs' | 'players'
+  selectedContinent: 'europe', // 'europe' | 'asia' | 'africa' | 'south_america' | 'north_america'
+  clubLeague: 'PD',
+  playerLeague: 'PD',
+  selectedClubId: '',          // إذا كان فارغاً في قسم اللاعبين نعرض شبكة الـ 20 نادياً للاختيار
+  selectedClubName: '',
+  selectedClubCrest: '',
+  searchQuery: '',
+  nationsData: [],
+  clubsData: [],
+  playerClubsList: [],
+  squadPlayersData: [],
+  _reqToken: 0,
+  _filteredNations: [],
+  _filteredClubs: [],
+  _filteredPlayerClubs: [],
+  _filteredPlayers: []
+};
+
+const CARDS_CONTINENTS_META = [
+  { key: 'europe',        icon: '🇪🇺', name: 'أوروبا (UEFA)',               sub: 'اليورو • دوري الأمم • تصنيف الفيفا', color: '#00d2ff' },
+  { key: 'south_america', icon: '🌎', name: 'أمريكا الجنوبية (CONMEBOL)',  sub: 'كوبا أمريكا • أبطال المونديال',     color: '#ffd600' },
+  { key: 'africa',        icon: '🌍', name: 'أفريقيا (CAF)',               sub: 'كأس أمم أفريقيا • عمالقة القارة',   color: '#00e676' },
+  { key: 'asia',          icon: '🌏', name: 'آسيا (AFC)',                  sub: 'كأس أمم آسيا • المنتخبات العربية',   color: '#38bdf8' },
+  { key: 'north_america', icon: '🌊', name: 'أمريكا الشمالية وأوقيانوسيا', sub: 'الكأس الذهبية CONCACAF & OFC',      color: '#c084fc' }
+];
+
+const CARDS_LEAGUES_BAR = [
+  { code: 'PD',  label: '🇪🇸 الدوري الإسباني' },
+  { code: 'PL',  label: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 الدوري الإنجليزي' },
+  { code: 'SA',  label: '🇮🇹 الدوري الإيطالي' },
+  { code: 'BL1', label: '🇩🇪 الدوري الألماني' },
+  { code: 'FL1', label: '🇫🇷 الدوري الفرنسي' },
+  { code: 'UCL', label: '🏆 أبطال أوروبا' },
+  { code: 'ACL', label: '🌏 نخبة آسيا' },
+  { code: 'CAF', label: '🌍 أبطال أفريقيا' },
+  { code: 'DED', label: '🇳🇱 الدوري الهولندي' },
+  { code: 'PPL', label: '🇵🇹 الدوري البرتغالي' },
+  { code: 'TSL', label: '🇹🇷 الدوري التركي' }
+];
+
+function injectCardsHubCustomStyles() {
+  // جميع تنسيقات البطاقات موجودة بشكل رسمي في ملف style.css
+}
+
+async function loadCardsHub(forceRefresh = false) {
+  injectCardsHubCustomStyles();
+  const container = document.getElementById('cards-hub-container');
+  if (!container) return;
+
+  const st = window._cardsHubState;
+  const reqToken = ++st._reqToken;
+  renderCardsHubSkeleton();
+
+  const grid = document.getElementById('cards-grid-box');
+  if (grid) {
+    grid.innerHTML = '<div class="loading-state" style="grid-column:1/-1;">🌐 جاري سحب البيانات الحية من الـ API...</div>';
+  }
 
   try {
-    const res = await fetch(`/api/fdr/${leagueCode}`);
-    const data = await res.json();
-    const dataList = data.fdr || [];
+    if (st.subPortal === 'nations') {
+      if (forceRefresh || st.nationsData.length === 0) {
+        const res = await fetch(`/api/cards_hub?sub_type=nations&refresh=${forceRefresh}`);
+        const data = await res.json();
+        if (data && data.status === 'success') st.nationsData = data.items || [];
+      }
+    } else if (st.subPortal === 'clubs') {
+      const res = await fetch(`/api/cards_hub?sub_type=clubs&league=${encodeURIComponent(st.clubLeague)}&refresh=${forceRefresh}`);
+      const data = await res.json();
+      if (data && data.status === 'success') st.clubsData = data.items || [];
+    } else if (st.subPortal === 'players') {
+      if (!st.selectedClubId) {
+        // الخطوة 1 و 2: جلب أندية الدوري المختار ليختار المستخدم النادي (مثل برشلونة)
+        const res = await fetch(`/api/cards_hub?sub_type=clubs&league=${encodeURIComponent(st.playerLeague)}&refresh=${forceRefresh}`);
+        const data = await res.json();
+        if (data && data.status === 'success') st.playerClubsList = data.items || [];
+      } else {
+        // الخطوة 3: جلب بطاقات جميع لاعبي النادي المختار
+        const res = await fetch(`/api/cards_hub?sub_type=squad&league=${encodeURIComponent(st.playerLeague)}&team_id=${encodeURIComponent(st.selectedClubId)}&team_name=${encodeURIComponent(st.selectedClubName)}&refresh=${forceRefresh}`);
+        const data = await res.json();
+        if (data && data.status === 'success') st.squadPlayersData = data.items || [];
+      }
+    }
+  } catch (e) {
+    console.error('Cards Hub API Error:', e);
+  }
+  if (reqToken !== window._cardsHubState._reqToken) return;
 
-    if (dataList.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:25px; color:var(--muted);">لا تتوفر مواعيد مجدولة حالياً.</td></tr>';
+  renderCardsGridItems();
+}
+
+function switchCardsSubPortal(portalKey) {
+  const st = window._cardsHubState;
+  st.subPortal = portalKey;
+  st.searchQuery = '';
+  if (portalKey === 'players') {
+    st.selectedClubId = '';
+    st.selectedClubName = '';
+  }
+  loadCardsHub(false);
+}
+
+function selectCardsContinent(contKey) {
+  window._cardsHubState.selectedContinent = contKey;
+  renderCardsHubSkeleton();
+  renderCardsGridItems();
+}
+
+function selectCardsLeagueFilter(lgCode) {
+  const st = window._cardsHubState;
+  if (st.subPortal === 'players') {
+    st.playerLeague = lgCode;
+    st.selectedClubId = '';
+    st.selectedClubName = '';
+  } else {
+    st.clubLeague = lgCode;
+  }
+  loadCardsHub(false);
+}
+
+function selectClubForPlayerSquad(teamId, teamName, teamCrest) {
+  const st = window._cardsHubState;
+  st.selectedClubId = String(teamId || '');
+  st.selectedClubName = teamName || '';
+  st.selectedClubCrest = teamCrest || '';
+  st.searchQuery = '';
+  loadCardsHub(false);
+}
+
+function backToPlayerClubsSelection() {
+  const st = window._cardsHubState;
+  st.selectedClubId = '';
+  st.selectedClubName = '';
+  st.searchQuery = '';
+  loadCardsHub(false);
+}
+
+function jumpFromClubModalToSquad(leagueCode, teamId, teamName, teamCrest) {
+  closeModal('cards-detail-modal');
+  const st = window._cardsHubState;
+  st.subPortal = 'players';
+  st.playerLeague = leagueCode || st.clubLeague || 'PD';
+  st.selectedClubId = String(teamId || '');
+  st.selectedClubName = teamName || '';
+  st.selectedClubCrest = teamCrest || '';
+  st.searchQuery = '';
+  loadCardsHub(false);
+}
+
+function onCardsSearchInput(val) {
+  window._cardsHubState.searchQuery = (val || '').trim();
+  renderCardsGridItems();
+}
+
+function renderCardsHubSkeleton() {
+  const container = document.getElementById('cards-hub-container');
+  if (!container) return;
+
+  const st = window._cardsHubState;
+  const sub = st.subPortal;
+
+  let navigationBlockHtml = '';
+
+  if (sub === 'nations') {
+    navigationBlockHtml = `
+      <div style="margin-bottom:8px; font-size:0.82rem; font-weight:900; color:var(--accent-cyan);">
+        🌍 اختر القارة لاستعراض منتخباتها وتصنيفها في الفيفا:
+      </div>
+      <div class="continent-selector-grid">
+        ${CARDS_CONTINENTS_META.map(c => `
+          <div class="continent-card-btn ${st.selectedContinent === c.key ? 'active' : ''}" onclick="selectCardsContinent('${c.key}')">
+            <span style="font-size:1.7rem;">${c.icon}</span>
+            <div style="min-width:0;">
+              <div style="font-weight:900; font-size:0.88rem; color:#fff;">${c.name}</div>
+              <div style="font-size:0.7rem; color:var(--muted); margin-top:2px;">${c.sub}</div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  } else if (sub === 'clubs') {
+    navigationBlockHtml = `
+      <div style="margin-bottom:8px; font-size:0.82rem; font-weight:900; color:var(--accent-gold);">
+        🏟️ اختر الدوري لاستعراض أنديته وسجلات بطولاته التاريخية:
+      </div>
+      <div class="mercato-chips-group" style="margin-bottom:12px;">
+        ${CARDS_LEAGUES_BAR.map(lg => `
+          <button class="mercato-region-chip ${st.clubLeague === lg.code ? 'active' : ''}" onclick="selectCardsLeagueFilter('${lg.code}')">
+            ${lg.label}
+          </button>
+        `).join('')}
+      </div>
+    `;
+  } else if (sub === 'players') {
+    const breadcrumbHtml = st.selectedClubId
+      ? `
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; background:linear-gradient(90deg, rgba(0,230,118,0.14), rgba(0,210,255,0.08)); border:1px solid var(--accent-green); border-radius:14px; padding:10px 14px; margin-top:10px;">
+          <div style="display:flex; align-items:center; gap:10px;">
+            ${st.selectedClubCrest ? `<img src="${st.selectedClubCrest}" width="32" height="32" style="object-fit:contain;">` : ''}
+            <div>
+              <div style="font-weight:900; font-size:0.95rem; color:#fff;">بطاقات لاعبي نادي ${st.selectedClubName} (FIFA Cards)</div>
+              <div style="font-size:0.74rem; color:var(--accent-gold); font-weight:700;">اضغط على أي لاعب لفتح بطاقته الكاملة وطاقاته وتفاصيله الجسدية</div>
+            </div>
+          </div>
+          <button class="back-btn" onclick="backToPlayerClubsSelection()" style="padding:6px 14px; font-size:0.78rem;">
+            ⬅️ العودة لقائمة أندية الدوري
+          </button>
+        </div>
+      `
+      : `
+        <div style="font-size:0.8rem; color:var(--accent-gold); font-weight:800; margin-top:6px;">
+          👈 الخطوة 2: اختر النادي من القائمة بالأسفل لعرض بطاقات جميع لاعبيه (مثل: برشلونة، ريال مدريد، ليفربول...)
+        </div>
+      `;
+
+    navigationBlockHtml = `
+      <div style="margin-bottom:8px; font-size:0.82rem; font-weight:900; color:var(--accent-green);">
+        🎮 الخطوة 1: اختر الدوري للوصول إلى أنديته ولاعبيه:
+      </div>
+      <div class="mercato-chips-group">
+        ${CARDS_LEAGUES_BAR.map(lg => `
+          <button class="mercato-region-chip ${st.playerLeague === lg.code ? 'active' : ''}" onclick="selectCardsLeagueFilter('${lg.code}')">
+            ${lg.label}
+          </button>
+        `).join('')}
+      </div>
+      ${breadcrumbHtml}
+    `;
+  }
+
+  container.innerHTML = `
+    <!-- البوابات الثلاث الرئيسية لصفحة البطاقات -->
+    <div class="cards-main-tabs">
+      <div class="cards-portal-tab ${sub === 'nations' ? 'active-nations' : ''}" onclick="switchCardsSubPortal('nations')">
+        <div>
+          <div class="mercato-tab-title"><span>🌍</span> <span>1. قسم المنتخبات العالمية</span></div>
+          <div class="mercato-tab-sub">القارات الـ 5، تصنيف الفيفا، ألقاب المونديال والقارات، والهداف التاريخي</div>
+        </div>
+        <span class="mercato-count-pill" style="color:var(--accent-cyan); border-color:rgba(0,210,255,0.4); background:rgba(0,210,255,0.12);">5 قارات</span>
+      </div>
+
+      <div class="cards-portal-tab ${sub === 'clubs' ? 'active-clubs' : ''}" onclick="switchCardsSubPortal('clubs')">
+        <div>
+          <div class="mercato-tab-title"><span>🏟️</span> <span>2. قسم الأندية التاريخية</span></div>
+          <div class="mercato-tab-sub">ألقاب الأندية المحلية والقارية والعالمية، الهداف التاريخي، وعميد اللاعبين</div>
+        </div>
+        <span class="mercato-count-pill" style="color:var(--accent-gold); border-color:rgba(255,214,0,0.4); background:rgba(255,214,0,0.12);">11 بطولة</span>
+      </div>
+
+      <div class="cards-portal-tab ${sub === 'players' ? 'active-players' : ''}" onclick="switchCardsSubPortal('players')">
+        <div>
+          <div class="mercato-tab-title"><span>🎮</span> <span>3. بطاقات اللاعبين (FIFA)</span></div>
+          <div class="mercato-tab-sub">اختر الدوري ⬅️ النادي ⬅️ بطاقات جميع اللاعبين (السرعة، الهجوم، الدفاع، الطول، الوزن)</div>
+        </div>
+        <span class="mercato-count-pill">FUT Cards</span>
+      </div>
+    </div>
+
+    <!-- شريط القارات / الدوريات + شريط البحث -->
+    <div class="mercato-filters-bar">
+      ${navigationBlockHtml}
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-top:12px; padding-top:10px; border-top:1px solid rgba(255,255,255,0.06);">
+        <input
+          type="text"
+          class="mercato-search-input"
+          style="flex:1; min-width:220px;"
+          placeholder="${sub === 'nations' ? '🔍 ابحث باسم المنتخب...' : (sub === 'clubs' ? '🔍 ابحث باسم النادي...' : (st.selectedClubId ? '🔍 ابحث باسم اللاعب أو المركز داخل النادي...' : '🔍 ابحث باسم النادي...'))}"
+          value="${escapeHtml(st.searchQuery)}"
+          oninput="onCardsSearchInput(this.value)"
+        >
+        <button class="retry-btn" onclick="loadCardsHub(true)" style="padding:7px 14px; font-size:0.78rem;">تحديث حي من الـ API ↻</button>
+      </div>
+    </div>
+
+    <div id="cards-grid-box" class="cards-grid-layout"></div>
+  `;
+}
+
+function renderCardsGridItems() {
+  const grid = document.getElementById('cards-grid-box');
+  if (!grid) return;
+
+  const st = window._cardsHubState;
+  const q = (st.searchQuery || '').toLowerCase();
+
+  // ==================== 1. قسم المنتخبات (مقسمة حسب القارات الـ 5) ====================
+  if (st.subPortal === 'nations') {
+    const list = (st.nationsData || [])
+      .filter(n => {
+        if (n.continent_key !== st.selectedContinent) return false;
+        if (!q) return true;
+        return `${n.name} ${n.raw_name} ${n.confederation}`.toLowerCase().includes(q);
+      })
+      .sort((a, b) => (Number(a.rank) || 999) - (Number(b.rank) || 999));
+
+    if (list.length === 0) {
+      grid.innerHTML = '<div class="loading-state" style="grid-column:1/-1;">لا توجد منتخبات مطابقة لبحثك في هذه القارة.</div>';
       return;
     }
 
-    tbody.innerHTML = dataList.map(row => `
-      <tr>
-        <td style="font-weight:800; color:var(--muted);">#${row.rank}</td>
-        <td>
-          <div style="display:flex; align-items:center; gap:6px;">
-            <img src="${row.crest}" width="20" height="20" onerror="this.src='https://via.placeholder.com/20'">
-            <strong>${row.name}</strong>
-          </div>
-        </td>
-        <td>
-          <span style="font-weight:900; font-size:0.95rem; color:${row.avg_difficulty <= 2.5 ? 'var(--accent-green)' : row.avg_difficulty >= 3.6 ? 'var(--accent-red)' : 'var(--accent-gold)'};">
-            ${row.avg_difficulty}
-          </span>
-        </td>
-        ${(row.fixtures || []).map(f => `
-          <td style="text-align:center;">
-            <div class="fdr-cell" style="background:${f.color};">
-              <span class="fdr-diff-badge">${f.difficulty}</span>
-              <span style="white-space:nowrap;">${f.opp_name}</span>
-              <span class="fdr-tag-h">${f.venue_tag}</span>
+    st._filteredNations = list;
+    grid.innerHTML = list.map((n, idx) => `
+      <div class="sleek-nation-card" onclick="openNationCardByIdx(${idx})">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+          <div style="display:flex; align-items:center; gap:12px; min-width:0;">
+            <div class="entity-crest-box" style="width:60px; height:60px; border-radius:16px; overflow:hidden; padding:4px; background:#060a14;">
+              <img src="${n.flag_url}" alt="${n.name}" style="width:100%; height:100%; object-fit:cover; border-radius:12px;" onerror="this.src='https://ui-avatars.com/api/?name=NT&background=0f172a&color=00d2ff&rounded=true'">
             </div>
-          </td>
-        `).join('')}
-      </tr>
+            <div style="min-width:0;">
+              <div style="font-size:1.12rem; font-weight:900; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${n.name}</div>
+              <div style="font-size:0.75rem; color:var(--accent-cyan); font-weight:800; margin-top:3px;">
+                🌍 الاتحاد: ${n.confederation}
+              </div>
+            </div>
+          </div>
+
+          <div style="text-align:center; background:rgba(0, 230, 118, 0.12); border:1.5px solid var(--accent-green); border-radius:14px; padding:6px 12px; flex-shrink:0;">
+            <div style="font-size:0.64rem; color:#cbd5e1; font-weight:800;">تصنيف الفيفا</div>
+            <div style="font-size:1.2rem; font-weight:900; color:var(--accent-green); direction:ltr;">#${n.rank}</div>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; background:#060a14; border:1px solid #18253f; border-radius:12px; padding:9px 12px; font-size:0.76rem;">
+          <span style="color:var(--muted); font-weight:700;">⚡ نقاط الفيفا: <strong style="color:#fff;">${n.fifa_points}</strong></span>
+          <span style="color:var(--accent-gold); font-weight:900;">🏆 الألقاب والهداف التاريخي ⬅️</span>
+        </div>
+      </div>
     `).join('');
-  } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:var(--accent-red);">فشل جلب مصفوفة الصعوبة، يرجى المحاولة لاحقاً.</td></tr>';
+    return;
   }
+
+  // ==================== 2. قسم الأندية (كروت نظيفة تفتح صندوق البطولات والأساطير) ====================
+  if (st.subPortal === 'clubs') {
+    const list = (st.clubsData || []).filter(c => {
+      if (!q) return true;
+      return `${c.name} ${c.raw_name} ${c.short_name}`.toLowerCase().includes(q);
+    });
+
+    if (list.length === 0) {
+      grid.innerHTML = '<div class="loading-state" style="grid-column:1/-1;">لا توجد أندية مطابقة لبحثك.</div>';
+      return;
+    }
+
+   st._filteredClubs = list;
+    grid.innerHTML = list.map((c, idx) => `
+      <div class="sleek-club-card" onclick="openClubCardByIdx(${idx})">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+          <div style="display:flex; align-items:center; gap:12px; min-width:0;">
+            <div class="entity-crest-box" style="width:60px; height:60px;">
+              <img src="${c.crest}" alt="${c.name}" onerror="this.src='https://ui-avatars.com/api/?name=FC&background=1e293b&color=fff&rounded=true'">
+            </div>
+            <div style="min-width:0;">
+              <div style="font-size:1.12rem; font-weight:900; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${c.name}</div>
+              <div style="font-size:0.75rem; color:var(--accent-gold); font-weight:800; margin-top:3px;">
+                ${c.league_flag || '⚽'} ${c.league_name}
+              </div>
+            </div>
+          </div>
+
+          <div style="text-align:center; background:rgba(255, 214, 0, 0.12); border:1.5px solid var(--accent-gold); border-radius:14px; padding:6px 12px; flex-shrink:0;">
+            <div style="font-size:0.64rem; color:#cbd5e1; font-weight:800;">المركز الحالي</div>
+            <div style="font-size:1.15rem; font-weight:900; color:var(--accent-gold); direction:ltr;">#${c.rank}</div>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; background:#060a14; border:1px solid #18253f; border-radius:12px; padding:9px 12px; font-size:0.76rem;">
+          <span style="color:var(--muted); font-weight:700;">📊 النقاط: <strong style="color:var(--accent-green);">${c.points}</strong> (${c.played} جولة)</span>
+          <span style="color:var(--accent-cyan); font-weight:900;">🏆 خزانة الألقاب والأساطير ⬅️</span>
+        </div>
+      </div>
+    `).join('');
+    return;
+  }
+
+  // ==================== 3. قسم اللاعبين (الخطوة أ: اختيار النادي | الخطوة ب: بطاقات FIFA للاعبي النادي) ====================
+  if (!st.selectedClubId) {
+    // عرض أندية الدوري الـ 20 ليختار المستخدم النادي (مثل برشلونة)
+    const clubs = (st.playerClubsList || []).filter(c => {
+      if (!q) return true;
+      return `${c.name} ${c.raw_name} ${c.short_name}`.toLowerCase().includes(q);
+    });
+
+    if (clubs.length === 0) {
+      grid.innerHTML = '<div class="loading-state" style="grid-column:1/-1;">لا توجد أندية متاحة حالياً.</div>';
+      return;
+    }
+
+    st._filteredPlayerClubs = clubs;
+    grid.innerHTML = clubs.map((c, idx) => `
+      <div class="sleek-club-card" onclick="selectClubForSquadByIdx(${idx})">
+        <div style="display:flex; align-items:center; gap:14px;">
+          <div class="entity-crest-box" style="width:64px; height:64px;">
+            <img src="${c.crest}" alt="${c.name}" onerror="this.src='https://ui-avatars.com/api/?name=FC&background=1e293b&color=fff&rounded=true'">
+          </div>
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:1.15rem; font-weight:900; color:#fff;">${c.name}</div>
+            <div style="font-size:0.76rem; color:var(--muted); font-weight:700; margin-top:3px;">
+              ${c.league_flag} ${c.league_name} • المركز #${c.rank}
+            </div>
+          </div>
+        </div>
+        <div style="background:rgba(0, 230, 118, 0.12); border:1px solid rgba(0, 230, 118, 0.35); border-radius:12px; padding:8px 12px; text-align:center; font-size:0.8rem; font-weight:900; color:var(--accent-green);">
+          🎮 استعراض بطاقات جميع لاعبي ${c.name} ⬅️
+        </div>
+      </div>
+    `).join('');
+    return;
+  }
+
+  // عرض بطاقات FIFA لجميع لاعبي النادي المختار
+  const players = (st.squadPlayersData || []).filter(p => {
+    if (!q) return true;
+    return `${p.name} ${p.position} ${p.pos_abbr} ${p.nationality} ${p.jersey}`.toLowerCase().includes(q);
+  });
+
+  if (players.length === 0) {
+    grid.innerHTML = '<div class="loading-state" style="grid-column:1/-1;">لا يوجد لاعبون مطابقون لبحثك في هذا النادي.</div>';
+    return;
+  }
+st._filteredPlayers = players;
+  grid.innerHTML = players.map((p, idx) => {
+    const f = p.fifa || { pac: 80, sho: 75, pas: 78, dri: 80, def: 65, phy: 76 };
+    const ovr = p.overall || 82;
+    const isSpecial = ovr >= 86;
+
+    return `
+      <div class="fifa-fut-card ${isSpecial ? 'tier-special' : ''}" onclick="openFifaPlayerModal(${idx})">
+        <div class="fut-header-split">
+          <div class="fut-rating-column">
+            <div class="fut-ovr-big">${ovr}</div>
+            <div class="fut-pos-tag">${p.pos_abbr || 'CM'}</div>
+            <div style="font-size:0.7rem; color:var(--accent-cyan); font-weight:900; margin-top:3px;">#${p.jersey || '-'}</div>
+          </div>
+
+          <div class="fut-player-portrait">
+            <img src="${p.avatar}" alt="${p.name}" onerror="this.src='https://ui-avatars.com/api/?name=${encodeURIComponent(p.name.slice(0,2))}&background=0f172a&color=ffd600&bold=true&rounded=true'">
+          </div>
+
+          <div style="display:flex; flex-direction:column; align-items:center; gap:6px;">
+            ${p.club_crest ? `<img src="${p.club_crest}" width="34" height="34" style="object-fit:contain;" onerror="this.style.display='none'">` : ''}
+            <span style="font-size:0.68rem; background:rgba(255,255,255,0.07); padding:2px 8px; border-radius:8px; color:#e2e8f0; font-weight:800;">${p.nationality}</span>
+          </div>
+        </div>
+
+        <div class="fut-name-banner">${p.name}</div>
+
+        <!-- طاقات بطاقة فيفا الـ 6 -->
+        <div class="fut-attributes-grid">
+          <div class="fut-attr-item">
+            <span class="fut-attr-lbl">⚡ السرعة PAC</span>
+            <span class="fut-attr-val">${f.pac}</span>
+          </div>
+          <div class="fut-attr-item">
+            <span class="fut-attr-lbl">🪄 المراوغة DRI</span>
+            <span class="fut-attr-val">${f.dri}</span>
+          </div>
+          <div class="fut-attr-item">
+            <span class="fut-attr-lbl">🎯 الهجوم SHO</span>
+            <span class="fut-attr-val">${f.sho}</span>
+          </div>
+          <div class="fut-attr-item">
+            <span class="fut-attr-lbl">🛡️ الدفاع DEF</span>
+            <span class="fut-attr-val">${f.def}</span>
+          </div>
+          <div class="fut-attr-item">
+            <span class="fut-attr-lbl">📐 التمرير PAS</span>
+            <span class="fut-attr-val">${f.pas}</span>
+          </div>
+          <div class="fut-attr-item">
+            <span class="fut-attr-lbl">💪 البدني PHY</span>
+            <span class="fut-attr-val">${f.phy}</span>
+          </div>
+        </div>
+
+        <!-- الشريط الجسدي والشخصي (الطول، الوزن، العمر) -->
+        <div class="fut-bio-strip">
+          <span>📏 ${p.height || '180 سم'}</span>
+          <span>⚖️ ${p.weight || '74 كغ'}</span>
+          <span>🎂 ${p.age} سنة</span>
+          <span style="color:var(--accent-green);">${p.position}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function openNationCardByIdx(idx) {
+  const n = (window._cardsHubState._filteredNations || [])[idx];
+  if (!n) return;
+  openEntityHistoryModal('nation', encodeURIComponent(n.raw_name || n.name), encodeURIComponent(n.name), encodeURIComponent(n.flag_url || ''), n.confederation, n.rank);
+}
+
+function openClubCardByIdx(idx) {
+  const c = (window._cardsHubState._filteredClubs || [])[idx];
+  if (!c) return;
+  openEntityHistoryModal('club', encodeURIComponent(c.raw_name || c.name), encodeURIComponent(c.name), encodeURIComponent(c.crest || ''), c.league_code, c.rank, c.team_id || '');
+}
+
+function selectClubForSquadByIdx(idx) {
+  const c = (window._cardsHubState._filteredPlayerClubs || [])[idx];
+  if (!c) return;
+  selectClubForPlayerSquad(c.team_id, c.name, c.crest);
+}
+
+// =========================================================
+// الصندوق المنبثق (Modal) لتفاصيل المنتخب أو النادي (الألقاب + الأساطير)
+// =========================================================
+async function openEntityHistoryModal(entityType, encodedRawName, encodedArName, encodedImg, extraInfo, rankNum, teamId = '') {
+  const modal = document.getElementById('cards-detail-modal');
+  const body = document.getElementById('cards-modal-body');
+  if (!modal || !body) return;
+
+  const arName = decodeURIComponent(encodedArName || '');
+  const imgUrl = decodeURIComponent(encodedImg || '');
+
+  modal.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+  body.innerHTML = `
+    <div class="loading-state" style="padding:40px 15px;">
+      <div style="font-size:2rem; margin-bottom:10px;">🏆</div>
+      <div style="color:var(--accent-gold); font-weight:900;">جاري سحب سجل البطولات التاريخي وأساطير (${arName}) حياً من الـ API...</div>
+    </div>
+  `;
+
+  try {
+    const res = await fetch(`/api/card_profile_detail?entity_type=${encodeURIComponent(entityType)}&name=${encodedRawName}&extra=${encodeURIComponent(extraInfo || '')}`);
+    const data = await res.json();
+    const pf = (data && data.profile) ? data.profile : {};
+
+    const honoursList = Array.isArray(pf.honours_detailed) ? pf.honours_detailed : [];
+    const worldHonours = honoursList.filter(h => h.category === 'world');
+    const contHonours = honoursList.filter(h => h.category === 'continental');
+    const domHonours = honoursList.filter(h => h.category !== 'world' && h.category !== 'continental');
+
+    const renderHonoursGroup = (title, items, borderCol) => {
+      if (!items || items.length === 0) return '';
+      return `
+        <div style="margin-bottom:12px;">
+          <div style="font-size:0.78rem; font-weight:900; color:${borderCol}; margin-bottom:6px;">${title}</div>
+          <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(175px, 1fr)); gap:8px;">
+            ${items.map(h => `
+              <div style="background:#070c18; border:1px solid #1e2d4a; border-right:3.5px solid ${borderCol}; border-radius:12px; padding:8px 12px; display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-size:0.78rem; font-weight:800; color:#f1f5f9;">${h.title}</span>
+                <span style="font-size:1.05rem; font-weight:900; color:${borderCol}; background:rgba(255,255,255,0.05); padding:2px 9px; border-radius:8px;">${h.count}</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    };
+
+    const allHonoursHtml = honoursList.length > 0
+      ? (
+          renderHonoursGroup('🌍 الألقاب العالمية والدولية الكبرى:', worldHonours, '#ffd600') +
+          renderHonoursGroup('🏆 الألقاب القارية الرسمية:', contHonours, '#00d2ff') +
+          renderHonoursGroup('🥇 البطولات المحلية (الدوري والكأس والسوبر):', domHonours, '#00e676')
+        )
+      : `<div style="background:#070c18; border:1px dashed #1e2d4a; border-radius:12px; padding:12px; text-align:center; color:var(--muted); font-size:0.8rem; margin-bottom:12px;">
+          لم يتوج بألقاب كبرى في السجل الدولي أو أن البيانات قيد التحديث.
+         </div>`;
+
+    const squadJumpBtn = (entityType === 'club' && teamId)
+      ? `<button class="ai-btn"
+            data-league="${escapeHtml(extraInfo)}"
+            data-team-id="${escapeHtml(teamId)}"
+            data-team-name="${escapeHtml(arName)}"
+            data-team-crest="${escapeHtml(imgUrl)}"
+            onclick="jumpFromClubModalToSquad(this.dataset.league, this.dataset.teamId, this.dataset.teamName, this.dataset.teamCrest)"
+            style="width:100%; margin-top:12px; padding:10px; font-size:0.86rem;">
+          🎮 استعراض بطاقات جميع لاعبي ${escapeHtml(arName)} (FIFA Cards) ⬅️
+         </button>`
+      : '';
+
+    body.innerHTML = `
+      <!-- رأس الصندوق -->
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:14px; border-bottom:1px solid var(--card-border); padding-bottom:14px; margin-bottom:16px; flex-wrap:wrap; padding-left: 38px;">
+        <div style="display:flex; align-items:center; gap:14px;">
+          <img src="${imgUrl || pf.image}" width="68" height="68" style="object-fit:contain; border-radius:16px; background:#060a14; padding:6px; border:1.5px solid var(--accent-gold);" onerror="this.style.display='none'">
+          <div>
+            <h3 style="font-size:1.3rem; font-weight:900; color:#fff; margin:0;">${arName}</h3>
+            <div style="font-size:0.8rem; color:var(--accent-cyan); font-weight:800; margin-top:4px;">
+              ${entityType === 'nation' ? `🌍 الاتحاد القاري: ${extraInfo} • تصنيف الفيفا العالمي: #${rankNum}` : `📅 التأسيس: ${pf.founded || '-'} • 🏟️ الملعب: ${pf.stadium || '-'}`}
+            </div>
+          </div>
+        </div>
+        <div style="background:rgba(255,214,0,0.14); border:1.5px solid var(--accent-gold); color:var(--accent-gold); padding:6px 14px; border-radius:14px; text-align:center;">
+          <div style="font-size:0.65rem; font-weight:800;">إجمالي البطولات</div>
+          <div style="font-size:1.25rem; font-weight:900;">🏆 ${pf.total_trophies || 0}</div>
+        </div>
+      </div>
+
+      <!-- خزانة الألقاب التفصيلية -->
+      <h4 style="font-size:0.92rem; color:var(--accent-gold); margin-bottom:10px;">🏛️ خزانة الألقاب والبطولات الرسمية:</h4>
+      ${allHonoursHtml}
+
+      <!-- السجلات التاريخية (الهداف التاريخي، الأكثر صناعة، الأكثر مشاركة) -->
+      <h4 style="font-size:0.92rem; color:var(--accent-cyan); margin:14px 0 8px 0;">🌟 السجل التاريخي وأساطير ${entityType === 'nation' ? 'المنتخب' : 'النادي'}:</h4>
+      <div class="entity-records-list" style="gap:10px; font-size:0.84rem; margin-bottom:14px;">
+        <div class="entity-rec-row" style="border-bottom:1px dashed rgba(255,255,255,0.07); padding-bottom:6px;">
+          <span class="entity-rec-lbl">⚽ الهداف التاريخي:</span>
+          <span class="entity-rec-val" style="color:var(--accent-gold); font-size:0.88rem;">${pf.top_scorer || '-'}</span>
+        </div>
+        <div class="entity-rec-row" style="border-bottom:1px dashed rgba(255,255,255,0.07); padding-bottom:6px;">
+          <span class="entity-rec-lbl">🎯 الأكثر صناعة للأهداف:</span>
+          <span class="entity-rec-val" style="color:var(--accent-green); font-size:0.88rem;">${pf.most_assists || '-'}</span>
+        </div>
+        <div class="entity-rec-row">
+          <span class="entity-rec-lbl">🛡️ الأكثر لعباً ومشاركة:</span>
+          <span class="entity-rec-val" style="color:var(--accent-cyan); font-size:0.88rem;">${pf.most_apps || '-'}</span>
+        </div>
+      </div>
+
+      <!-- نبذة موسوعية حية -->
+      <div style="background:#070c18; border:1px solid var(--card-border); border-right:4px solid var(--accent-green); border-radius:12px; padding:12px 14px; font-size:0.82rem; line-height:1.7; color:#cbd5e1;">
+        <div style="font-weight:900; color:var(--accent-green); margin-bottom:4px;">📖 نبذة تاريخية موثقة:</div>
+        <div>${pf.bio || ''}</div>
+      </div>
+
+      ${squadJumpBtn}
+    `;
+  } catch (e) {
+    body.innerHTML = '<div class="loading-state" style="color:var(--accent-red);">تعذر جلب بيانات السجل التاريخي في هذه اللحظة.</div>';
+  }
+}
+
+// =========================================================
+// الصندوق المنبثق لبطاقة اللاعب التفصيلية (FIFA Player Modal)
+// =========================================================
+function openFifaPlayerModal(playerIdx) {
+
+
+  const p = (window._cardsHubState._filteredPlayers || [])[playerIdx];
+  if (!p) return;
+
+  const modal = document.getElementById('cards-detail-modal');
+  const body = document.getElementById('cards-modal-body');
+  if (!modal || !body) return;
+
+  const f = p.fifa || { pac: 80, sho: 75, pas: 78, dri: 80, def: 65, phy: 76 };
+
+  const statBarRow = (label, val, col) => `
+    <div style="margin-bottom:9px;">
+      <div style="display:flex; justify-content:space-between; font-size:0.82rem; font-weight:800; margin-bottom:4px; ">
+        <span style="color:#e2e8f0;">${label}</span>
+        <span style="color:${col}; font-weight:900;">${val} / 99</span>
+      </div>
+      <div style="height:8px; background:#060a14; border-radius:99px; overflow:hidden; border:1px solid #1e2d4a;">
+        <div style="width:${Math.min(100, val)}%; height:100%; background:${col}; border-radius:99px;"></div>
+      </div>
+    </div>
+  `;
+
+  body.innerHTML = `
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:14px; border-bottom:1px solid var(--card-border); padding-bottom:14px; margin-bottom:16px; flex-wrap:wrap; padding-left: 38px;">
+      <div style="display:flex; align-items:center; gap:14px;">
+        <div style="width:76px; height:76px; border-radius:50%; border:2.5px solid var(--accent-gold); overflow:hidden; background:#070c18; flex-shrink:0;">
+          <img src="${p.avatar}" alt="${p.name}" style="width:100%; height:100%; object-fit:cover;" onerror="this.src='https://ui-avatars.com/api/?name=P&background=0f172a&color=ffd600&rounded=true'">
+        </div>
+        <div>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <h3 style="font-size:1.3rem; font-weight:900; color:#fff; margin:0;">${p.name}</h3>
+            <span style="background:rgba(255,214,0,0.16); border:1px solid var(--accent-gold); color:var(--accent-gold); padding:2px 10px; border-radius:8px; font-weight:900; font-size:0.8rem;">#${p.jersey}</span>
+          </div>
+          <div style="font-size:0.82rem; color:var(--accent-cyan); font-weight:800; margin-top:4px; display:flex; align-items:center; gap:6px;">
+            ${p.club_crest ? `<img src="${p.club_crest}" width="18" height="18">` : ''}
+            <span>${p.club}</span> • <span>${p.position}</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="background:linear-gradient(145deg, #ffd600, #ff9100); color:#050811; border-radius:16px; padding:8px 16px; text-align:center; flex-shrink:0;">
+        <div style="font-size:0.65rem; font-weight:900;">FIFA OVR</div>
+        <div style="font-size:1.6rem; font-weight:900; line-height:1;">${p.overall}</div>
+      </div>
+    </div>
+
+    <!-- القياسات الجسدية والبيانات الشخصية الحقيقية -->
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(115px, 1fr)); gap:8px; margin-bottom:16px; text-align:center;">
+      <div style="background:#070c18; border:1px solid #1e2d4a; border-radius:12px; padding:9px;">
+        <div style="font-size:0.7rem; color:var(--muted);">📏 الطول</div>
+        <div style="font-size:0.95rem; font-weight:900; color:#fff; margin-top:3px;">${p.height}</div>
+      </div>
+      <div style="background:#070c18; border:1px solid #1e2d4a; border-radius:12px; padding:9px;">
+        <div style="font-size:0.7rem; color:var(--muted);">⚖️ الوزن</div>
+        <div style="font-size:0.95rem; font-weight:900; color:#fff; margin-top:3px;">${p.weight}</div>
+      </div>
+      <div style="background:#070c18; border:1px solid #1e2d4a; border-radius:12px; padding:9px;">
+        <div style="font-size:0.7rem; color:var(--muted);">🎂 العمر</div>
+        <div style="font-size:0.95rem; font-weight:900; color:#fff; margin-top:3px;">${p.age} سنة</div>
+      </div>
+      <div style="background:#070c18; border:1px solid #1e2d4a; border-radius:12px; padding:9px;">
+        <div style="font-size:0.7rem; color:var(--muted);">🌍 الجنسية</div>
+        <div style="font-size:0.92rem; font-weight:900; color:var(--accent-cyan); margin-top:3px;">${p.nationality}</div>
+      </div>
+    </div>
+
+    <!-- المؤشرات التكتيكية الستة (FIFA Attributes) -->
+    <div style="background:#080e1c; border:1px solid var(--card-border); border-radius:16px; padding:14px; margin-bottom:14px;">
+      <h4 style="font-size:0.9rem; color:var(--accent-gold); margin-bottom:12px;">🎮 المؤشرات التكتيكية والبدنية (FIFA Attributes):</h4>
+      ${statBarRow('⚡ السرعة والانطلاق (Pace)', f.pac, '#00e676')}
+      ${statBarRow('🎯 الهجوم والتسديد (Shooting)', f.sho, '#ffd600')}
+      ${statBarRow('📐 التمرير وصناعة اللعب (Passing)', f.pas, '#00d2ff')}
+      ${statBarRow('🪄 المراوغة والتحكم (Dribbling)', f.dri, '#38bdf8')}
+      ${statBarRow('🛡️ الصلابة الدفاعية (Defending)', f.def, '#c084fc')}
+      ${statBarRow('💪 القوة البدنية والالتحامات (Physical)', f.phy, '#fb7185')}
+    </div>
+
+    <!-- أرقام الموسم الحالي مع النادي من ESPN API -->
+    <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; background:#060a14; border:1px solid #1e2d4a; border-radius:14px; padding:12px; text-align:center;">
+      <div>
+        <div style="font-size:1.25rem; font-weight:900; color:var(--accent-cyan);">🛡️ ${p.matches || 0}</div>
+        <div style="font-size:0.72rem; color:var(--muted); font-weight:700;">مباريات الموسم</div>
+      </div>
+      <div style="border-right:1px solid #1e2d4a; border-left:1px solid #1e2d4a;">
+        <div style="font-size:1.25rem; font-weight:900; color:var(--accent-gold);">⚽ ${p.goals || 0}</div>
+        <div style="font-size:0.72rem; color:var(--muted); font-weight:700;">الأهداف المسجلة</div>
+      </div>
+      <div>
+        <div style="font-size:1.25rem; font-weight:900; color:var(--accent-green);">🎯 ${p.assists || 0}</div>
+        <div style="font-size:0.72rem; color:var(--muted); font-weight:700;">صناعة الأهداف</div>
+      </div>
+    </div>
+  `;
+
+  modal.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
 }
 
 // =========================================================
@@ -959,7 +1965,7 @@ async function loadNewsFeed(forceRefresh = false) {
   const container = document.getElementById('news-container');
   if (!container) return;
 
-  container.innerHTML = '<div class="loading-state" style="grid-column: 1/-1;">جاري جلب أحدث الأخبار الرياضية...</div>';
+  container.innerHTML = renderSkeletonCardsHtml(6);
 
   try {
     const res = await fetch(`/api/news?refresh=${forceRefresh}`);
@@ -972,16 +1978,16 @@ async function loadNewsFeed(forceRefresh = false) {
       return;
     }
 
-    container.innerHTML = list.map((item, idx) => `
+     container.innerHTML = list.map((item, idx) => `
       <div class="news-item-card" onclick="openNewsArticle(${idx})">
-        ${item.image_url ? `<img src="${item.image_url}" class="news-card-thumb" onerror="this.style.display='none'">` : ''}
+        ${item.image_url ? `<img src="${escapeHtml(item.image_url)}" class="news-card-thumb" onerror="this.style.display='none'">` : ''}
         <div class="news-card-content">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-            <span style="font-size:0.72rem; color:var(--muted);">🕒 ${item.published_time || 'حديثاً'}</span>
+            <span style="font-size:0.72rem; color:var(--muted);">🕒 ${escapeHtml(item.published_time || 'حديثاً')}</span>
             <span class="hub-badge" style="color:var(--accent-gold); border-color:var(--accent-gold); font-size:0.65rem;">#${idx + 1}</span>
           </div>
-          <h3 class="news-card-title">${item.title}</h3>
-          <p class="news-card-desc">${item.summary || 'انقر لقراءة التقرير والتفاصيل الكاملة...'}</p>
+          <h3 class="news-card-title">${escapeHtml(item.title)}</h3>
+          <p class="news-card-desc">${escapeHtml(item.summary || 'انقر لقراءة التقرير والتفاصيل الكاملة...')}</p>
           <div style="font-size:0.75rem; color:var(--accent-cyan); font-weight:800; margin-top:8px;">
             قراءة الخبر كاملاً 📖 ↗
           </div>
@@ -1095,15 +2101,17 @@ function filterHistorySeasons(query) {
   `).join('');
 }
 
-async function loadLeagueHistory(leagueCode) {
+async function loadLeagueHistory(leagueCode, forceRefresh = false) {
   const container = document.getElementById('history-container');
   if (!container) return;
+  const reqToken = ++window._viewReqToken;
 
   container.innerHTML = '<div class="loading-state">⏳ جاري سحب السجل التاريخي الكامل لجميع النسخ منذ التأسيس عبر الـ API...</div>';
 
   try {
-    const res = await fetch(`/api/league_history/${leagueCode}`);
+    const res = await fetch(`/api/league_history/${leagueCode}?refresh=${forceRefresh}`);
     const resData = await res.json();
+    if (reqToken !== window._viewReqToken) return;
 
     if (!resData || resData.status !== 'success' || !resData.data) {
       const msg = (resData && resData.message) ? resData.message : 'لا تتوفر سجلات تاريخية حالياً.';
@@ -1132,7 +2140,7 @@ async function loadLeagueHistory(leagueCode) {
         </div>
 
         <h4 style="font-size:0.98rem; color:var(--accent-cyan); margin-bottom:12px;">🌟 الأرقام القياسية وأساطير البطولة عبر التاريخ</h4>
-        <div class="dp-h-scroll-bar" style="margin-bottom:22px; gap:12px;">
+        <div class="history-records-scroll">
           <div style="background:#0c121e; border:1px solid var(--card-border); border-right:4px solid #00e676; border-radius:10px; padding:10px 14px;">
             <div style="font-size:0.74rem; color:var(--muted);">⚽ الهداف التاريخي للبطولة</div>
             <div style="font-weight:900; font-size:0.9rem; color:#fff; margin-top:4px;">${rec.top_scorer || '-'}</div>
@@ -1183,7 +2191,7 @@ async function loadLeagueHistory(leagueCode) {
           </div>
         </div>
 
-        <div style="display:grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap:18px;" class="standings-layout">
+       <div class="history-tables-split">
           <div class="data-card" style="margin:0;">
             <h4 style="font-size:0.95rem; color:var(--accent-gold); margin-bottom:12px;">🏆 السجل الذهبي للأندية المتوجة (${titles.length} نادٍ)</h4>
             <div class="table-container" style="max-height:540px; overflow-y:auto;">
@@ -1988,7 +2996,7 @@ function renderMercatoWorkspace() {
             type="text"
             class="mercato-search-input"
             placeholder="🔍 ابحث باسم اللاعب، المدرب، أو النادي..."
-            value="${st.searchQuery}"
+          value="${escapeHtml(st.searchQuery)}"
             oninput="onMercatoSearchInput(this.value)"
           >
         </div>
@@ -2067,7 +3075,7 @@ function renderMercatoCardsGrid() {
                   <span class="t-person-name">${item.name}</span>
                   ${roleBadge}
                 </div>
-                <div class="t-person-sub">${item.position} • ${item.age} سنة • ${item.nationality}</div>
+                <div class="t-person-sub">${item.position} • ${item.age ? `${item.age} سنة • ` : ''}${item.nationality}</div>
               </div>
             </div>
             <span class="t-status-pill ${sMeta.pillCls}">${item.status_label}</span>
@@ -2135,12 +3143,12 @@ function renderMercatoCardsGrid() {
               <div class="t-avatar-wrap">
                 <img src="${item.avatar}" alt="${item.name}" onerror="this.src='https://ui-avatars.com/api/?name=P&background=1e293b&color=fff&rounded=true'">
               </div>
-              <div style="min-width:0;">
+           <div style="min-width:0;">
                 <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
                   <span class="t-person-name">${item.name}</span>
                   ${roleBadge}
                 </div>
-                <div class="t-person-sub">${item.position} • ${item.age} سنة • ${item.nationality}</div>
+                <div class="t-person-sub">${item.position} • ${item.age ? `${item.age} سنة • ` : ''}${item.nationality}</div>
               </div>
             </div>
             <span class="t-status-pill ${sMeta.pillCls}">${item.status_label}</span>
@@ -2207,20 +3215,21 @@ function openMercatoDetailModal(pageType, itemId) {
   const item = list.find(x => String(x.id) === String(itemId));
   if (!item) return;
 
-  const votes = window._mercatoState.votesMap[item.id] || { up: item.likes || 142, down: item.dislikes || 19 };
+  const savedVotes = getSavedMercatoVotes();
+const votes = savedVotes[item.id] || window._mercatoState.votesMap[item.id] || { up: item.likes || 142, down: item.dislikes || 19, userVote: null };
   const totalV = Math.max(1, votes.up + votes.down);
   const upPct = Math.round((votes.up / totalV) * 100);
 
-  body.innerHTML = `
-    <div style="display:flex; align-items:center; gap:14px; border-bottom:1px solid var(--card-border); padding-bottom:14px; margin-bottom:16px;">
-      <img src="${item.avatar}" width="64" height="64" style="border-radius:50%; object-fit:cover; border:2px solid var(--accent-cyan); background:#080d1a;" onerror="this.src='https://ui-avatars.com/api/?name=P&background=1e293b&color=fff&rounded=true'">
+ body.innerHTML = `
+    <div style="display:flex; align-items:center; gap:14px; border-bottom:1px solid var(--card-border); padding-bottom:14px; margin-bottom:16px; padding-left:42px;">
+      <img src="${escapeHtml(item.avatar)}" width="64" height="64" style="border-radius:50%; object-fit:cover; border:2px solid var(--accent-cyan); background:#080d1a;" onerror="this.src='https://ui-avatars.com/api/?name=P&background=1e293b&color=fff&rounded=true'">
       <div style="flex:1;">
         <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
           <h3 style="font-size:1.2rem; font-weight:900; color:#fff;">${item.name}</h3>
           <span class="hub-badge" style="color:var(--accent-gold); border-color:var(--accent-gold);">${item.status_label}</span>
         </div>
         <div style="font-size:0.82rem; color:var(--muted); margin-top:4px;">
-          ${item.role === 'coach' ? '👔 مدير فني' : '⚽ لاعب'} • ${item.position} • ${item.age} سنة • ${item.nationality}
+       ${item.role === 'coach' ? '👔 مدير فني' : '⚽ لاعب'} • ${item.position}${item.age ? ` • ${item.age} سنة` : ''} • ${item.nationality}
         </div>
       </div>
     </div>
@@ -2234,7 +3243,7 @@ function openMercatoDetailModal(pageType, itemId) {
         </div>
         <div class="t-arrow-tunnel">
           <span class="t-deal-type-lbl" style="font-size:0.78rem;">${item.deal_type}</span>
-          <div style="font-size:1.3rem; margin:4px 0;">⬅️</div>
+        <div style="font-size:1.3rem; margin:4px 0;">${item.status === 'failed' ? '✖️' : '⬅️'}</div>
           <span class="t-fee-lbl" style="font-size:0.82rem; color:var(--accent-gold);">${item.fee}</span>
         </div>
         <div class="t-club-node">
@@ -2256,7 +3265,7 @@ function openMercatoDetailModal(pageType, itemId) {
           <div class="renewal-dates-row">
             <span class="old-date-tag">${item.old_expiry}</span>
             <span>⬅️</span>
-            <span class="new-date-tag">${item.new_expiry}</span>
+            <span class="new-date-tag ${item.status === 'failed' ? 'date-failed' : ''}">${item.new_expiry}</span>
           </div>
           <div style="font-size:0.78rem; color:var(--accent-gold); font-weight:800; margin-top:4px;">${item.contract_length}</div>
         </div>
@@ -2312,16 +3321,33 @@ function openMercatoDetailModal(pageType, itemId) {
   document.body.style.overflow = 'hidden';
 }
 
+function getSavedMercatoVotes() {
+  try {
+    return JSON.parse(localStorage.getItem('deeppitch_mercato_votes_v1') || '{}');
+  } catch (e) {
+    return {};
+  }
+}
+
 function voteMercatoItem(itemId, dir, pageType) {
   const list = pageType === 'transfers' ? window._mercatoState.transfersList : window._mercatoState.contractsList;
   const item = list.find(x => String(x.id) === String(itemId));
   if (!item) return;
 
-  if (!window._mercatoState.votesMap[itemId]) {
-    window._mercatoState.votesMap[itemId] = { up: item.likes || 142, down: item.dislikes || 19 };
-  }
-  if (dir === 'up') window._mercatoState.votesMap[itemId].up += 1;
-  else window._mercatoState.votesMap[itemId].down += 1;
+  const saved = getSavedMercatoVotes();
+  const entry = saved[itemId] || { up: item.likes || 142, down: item.dislikes || 19, userVote: null };
+
+  if (entry.userVote === dir) return; // منع التكرار لنفس الخيار
+  if (entry.userVote === 'up') entry.up = Math.max(0, entry.up - 1);
+  if (entry.userVote === 'down') entry.down = Math.max(0, entry.down - 1);
+
+  if (dir === 'up') entry.up += 1;
+  else entry.down += 1;
+  entry.userVote = dir;
+
+  saved[itemId] = entry;
+  window._mercatoState.votesMap[itemId] = entry;
+  try { localStorage.setItem('deeppitch_mercato_votes_v1', JSON.stringify(saved)); } catch (e) {}
 
   openMercatoDetailModal(pageType, itemId);
 }
@@ -2332,7 +3358,10 @@ function voteMercatoItem(itemId, dir, pageType) {
 window._quizState = {
   phase: 'lobby',          // 'lobby' | 'playing' | 'summary'
   pool: [],
-  totalPoolCount: 3800,
+  totalPoolCount: 0,
+  categoryCounts: {},
+  aiAvailable: true,
+  fallbackNotice: '',
   activeQueue: [],
   currentIndex: 0,
   score: 0,
@@ -2361,6 +3390,7 @@ window._quizState = {
   historyLog: [],
   answeredCurrent: false,
   lifelines: { fifty: 2, hint: 2, freeze: 2 },
+  usedLifelinesThisQ: { fifty: false, hint: false, freeze: false },
   timerSec: 20,
   timerMax: 20,
   questionStartTs: 0,
@@ -2370,22 +3400,23 @@ window._quizState = {
 };
 
 const QUIZ_CATEGORIES_META = {
-  'ALL':              { icon: '🌟', name: 'شامل (الـ 12 فئة)', sub: 'توليفة عالمية متنوعة' },
-  'club_career':      { icon: '✈️', name: 'مسيرة لاعب بالشعارات', sub: 'شعارات الأندية بالترتيب' },
-  'nations_cups':     { icon: '🌍', name: 'كأس العالم والمنتخبات', sub: 'المونديال والبطولات القارية' },
-  'awards_scorers':   { icon: '🌕', name: 'البالون دور والهدافون', sub: 'الجوائز والأهداف الحاسمة' },
-  'jersey_numbers':   { icon: '👕', name: 'أرقام القمصان', sub: 'أرقام نجوم الأندية الحية' },
-  'derbies_stadiums': { icon: '🔥', name: 'قمم وديربيات العالم', sub: 'المواجهات الكبرى والملاعب' },
-  'coaches_tactics':  { icon: '👔', name: 'عباقرة الدكة والمدربون', sub: 'مسيرة المدربين بالشعارات' },
-  'finals_remontada': { icon: '⚡', name: 'النهائيات والريمونتادا', sub: 'نتائج النهائيات الدقيقة' },
+  'ALL':              { icon: '🌟', name: 'شامل (كل الفئات)', sub: 'توليفة عالمية متنوعة' },
+  'trivia':           { icon: '🧠', name: 'معلومات وتاريخ الدوريات', sub: 'أبطال المواسم والسجل الذهبي' },
+  'true_false':       { icon: '⚡', name: 'صح أم خطأ', sub: 'تحدي سرعة الحقائق الحية' },
   'visual':           { icon: '🔍', name: 'الشعار المغبش', sub: 'شعارات الأندية الرسمية' },
-  'stats':            { icon: '📊', name: 'مقارنات الأرقام', sub: 'أعلى أم أقل داخل البطولة' },
-  'who_am_i':         { icon: '🕵️‍♂️', name: 'من أنا؟ (3 أدلة)', sub: 'اكتشف الهوية بأقل تلميحات' },
-  'tactics':          { icon: '📋', name: 'الترتيب التكتيكي', sub: 'رتب الأندية المتقاربة تنازلياً' },
+  'nations_cups':     { icon: '🌍', name: 'كأس العالم والمنتخبات', sub: 'المونديال والبطولات القارية' },
+  'awards_scorers':   { icon: '🌕', name: 'سباق الهدافين والتاريخ', sub: 'هدافو المواسم والحاليون' },
+  'finals_remontada': { icon: '🏆', name: 'النهائيات الكبرى', sub: 'نتائج وأطراف النهائيات' },
+  'who_am_i':         { icon: '🕵️‍♂️', name: 'من أنا؟ (3 أدلة)', sub: 'اكتشف النادي أو الهداف' },
+  'stats':            { icon: '📊', name: 'أعلى أم أقل', sub: 'مقارنات الأرقام الحية' },
+  'tactics':          { icon: '📋', name: 'الترتيب التكتيكي', sub: 'رتب الأندية تنازلياً بالنقاط' },
+  'jersey_numbers':   { icon: '👕', name: 'أرقام القمصان', sub: 'أرقام نجوم الأندية الحية' },
+  'club_career':      { icon: '✈️', name: 'مسار الميركاتو بالشعارات', sub: 'شعارات انتقالات اللاعبين' },
+  'coaches_tactics':  { icon: '👔', name: 'عباقرة الدكة والمدربون', sub: 'المدربون التاريخيون والحاليون' },
+  'derbies_stadiums': { icon: '🔥', name: 'مواجهات وأرقام قياسية', sub: 'قمم الجولة وأكبر النتائج' },
   'blitz':            { icon: '⏱️', name: 'تحدي الـ 30 ثانية', sub: 'اكتب أكبر عدد من الأندية' }
 };
 
-// حقن تنسيقات السكرول العرضي وتلوين الإجابات مباشرة لضمان عملها على الموبايل والكمبيوتر دون تأثر بكاش المتصفح
 function injectQuizHorizontalScrollStyles() {
   if (document.getElementById('deeppitch-quiz-v6-css')) return;
   const stEl = document.createElement('style');
@@ -2447,7 +3478,7 @@ function injectQuizHorizontalScrollStyles() {
     }
 
     .q-cat-card-compact {
-      flex: 0 0 165px !important;
+      flex: 0 0 175px !important;
       scroll-snap-align: start !important;
       background: #080e1c !important;
       border: 1.5px solid #1d2d4d !important;
@@ -2499,6 +3530,40 @@ function injectQuizHorizontalScrollStyles() {
       border-color: #ff5252 !important;
       color: #ff5252 !important;
       box-shadow: 0 0 16px rgba(255, 82, 82, 0.35) !important;
+    }
+    .levelup-celebration-toast {
+      position: fixed !important;
+      top: 20px !important;
+      left: 50% !important;
+      transform: translateX(-50%) !important;
+      background: linear-gradient(135deg, #13264a, #070d1c) !important;
+      border: 2px solid #ffd600 !important;
+      border-radius: 16px !important;
+      padding: 12px 22px !important;
+      text-align: center !important;
+      z-index: 999999 !important;
+      box-shadow: 0 12px 35px rgba(255, 214, 0, 0.35) !important;
+    }
+    .quiz-review-list {
+      max-height: 280px;
+      overflow-y: auto;
+      text-align: right;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin: 12px 0 16px 0;
+      padding: 4px;
+    }
+    .quiz-review-item {
+      background: #070c18;
+      border: 1px solid #1b2a47;
+      border-right: 4px solid #00e676;
+      border-radius: 12px;
+      padding: 9px 12px;
+      font-size: 0.78rem;
+    }
+    .quiz-review-item.rev-wrong {
+      border-right-color: #ff5252;
     }
   `;
   document.head.appendChild(stEl);
@@ -2657,7 +3722,7 @@ function stopQuizTimer() {
 async function fetchQuizBankFromBackend() {
   const st = window._quizState;
   const seedParam = st.gameMode === 'friend_code' ? st.challengeSeed : '';
-  const url = `/api/quiz_bank?league=${encodeURIComponent(st.filterLeague)}&difficulty=${encodeURIComponent(st.filterDiff)}&region=${encodeURIComponent(st.filterRegion)}&category=${encodeURIComponent(st.filterCategory)}&qtype=${encodeURIComponent(st.filterCategory)}&seed=${encodeURIComponent(seedParam)}&use_ai=${st.useAiGenerator}&count=200&_t=${Date.now()}`;
+  const url = `/api/quiz_bank?league=${encodeURIComponent(st.filterLeague)}&difficulty=${encodeURIComponent(st.filterDiff)}&region=${encodeURIComponent(st.filterRegion)}&category=${encodeURIComponent(st.filterCategory)}&seed=${encodeURIComponent(seedParam)}&use_ai=${st.useAiGenerator}&count=200&_t=${Date.now()}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.json();
@@ -2671,19 +3736,22 @@ window.loadQuizArena = async function(forceReload = false) {
   const st = window._quizState;
   stopQuizTimer();
   st.phase = 'lobby';
+  st.fallbackNotice = '';
 
   if (!forceReload && Array.isArray(st.pool) && st.pool.length > 20) {
     renderQuizArenaWorkspace();
     return;
   }
 
-  container.innerHTML = '<div class="loading-state">🌐 جاري سحب وبناء الأسئلة الحية من الـ APIs الخارجية...</div>';
+  container.innerHTML = '<div class="loading-state">🌐 جاري سحب وتجهيز بنك الأسئلة الحي...</div>';
 
   try {
     const data = await fetchQuizBankFromBackend();
     if (data && data.status === 'success' && Array.isArray(data.questions)) {
       st.pool = data.questions;
       st.totalPoolCount = data.total_pool_size || data.questions.length;
+      st.categoryCounts = data.category_counts || {};
+      st.aiAvailable = data.ai_available !== false;
       if (!st.challengeSeed && data.seed_code) st.challengeSeed = data.seed_code;
     }
   } catch (e) {
@@ -2748,7 +3816,18 @@ window.refreshLiveLicenseBannerUI = function() {
 };
 
 window.setQuizLobbyParam = function(key, val) {
-  window._quizState[key] = val;
+  const st = window._quizState;
+  st[key] = val;
+  if (key === 'filterLeague' && val !== 'ALL') {
+    st.filterRegion = 'ALL';
+  } else if (key === 'filterRegion' && val !== 'ALL') {
+    st.filterLeague = 'ALL';
+  }
+  if (key === 'useAiGenerator' && val === true && st.aiAvailable === false) {
+    st.fallbackNotice = '⚠️ تنبيه: مفتاح Gemini AI غير مضبوط على السيرفر حالياً، سيتم استخدام بنك الأسئلة الحية.';
+  } else {
+    st.fallbackNotice = '';
+  }
   renderQuizArenaWorkspace();
 };
 
@@ -2771,14 +3850,24 @@ function renderQuizArenaWorkspace() {
   }
 }
 
+window._quizAdvancedOpen = false;
+
+window.toggleQuizAdvancedFilters = function() {
+  window._quizAdvancedOpen = !window._quizAdvancedOpen;
+  renderQuizArenaWorkspace();
+};
+
 function renderCleanQuizLobby(container) {
   const st = window._quizState;
+  const catCountNow = st.filterCategory === 'ALL'
+    ? (st.totalPoolCount || st.pool.length)
+    : ((st.categoryCounts && st.categoryCounts[st.filterCategory.toLowerCase()]) || 0);
 
   const modes = [
-    { key: 'solo', icon: '🎯', title: 'طور فردي قياسي' },
-    { key: 'ai_bot', icon: '🤖', title: 'تحدي البوت (vs AI)' },
-    { key: 'survival', icon: '❤️', title: 'طور النجاة (3 قلوب)' },
-    { key: 'friend_code', icon: '🔗', title: 'تحدي صديق بكود' }
+    { key: 'solo', icon: '🎯', title: 'طور فردي' },
+    { key: 'ai_bot', icon: '🤖', title: 'تحدي البوت' },
+    { key: 'survival', icon: '❤️', title: 'طور النجاة' },
+    { key: 'friend_code', icon: '🔗', title: 'تحدي صديق' }
   ];
 
   const regions = [
@@ -2790,40 +3879,49 @@ function renderCleanQuizLobby(container) {
   ];
 
   const leagues = [
-    { key: 'ALL', label: '🏆 كل البطولات' },
-    { key: 'UCL', label: '🏆 أبطال أوروبا' },
-    { key: 'PL', label: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 البريميرليغ' },
-    { key: 'PD', label: '🇪🇸 الليغا' },
-    { key: 'SA', label: '🇮🇹 الكالتشيو' },
-    { key: 'BL1', label: '🇩🇪 البوندسليغا' },
-    { key: 'FL1', label: '🇫🇷 الدوري الفرنسي' },
-    { key: 'ACL', label: '🌏 نخبة آسيا' },
-    { key: 'CAF', label: '🌍 أبطال أفريقيا' },
-    { key: 'UNL', label: '🏳️ المنتخبات' }
+    { key: 'ALL', label: 'كل البطولات' },
+    { key: 'UCL', label: 'أبطال أوروبا' },
+    { key: 'PL', label: 'البريميرليغ' },
+    { key: 'PD', label: 'الليغا' },
+    { key: 'SA', label: 'الكالتشيو' },
+    { key: 'BL1', label: 'البوندسليغا' },
+    { key: 'FL1', label: 'الفرنسي' },
+    { key: 'ACL', label: 'نخبة آسيا' },
+    { key: 'CAF', label: 'أبطال أفريقيا' },
+    { key: 'UNL', label: 'المنتخبات' }
   ];
+
+  const advSummary = `${st.sessionLength} سؤال • ${st.filterDiff === 'ALL' ? 'كل المستويات' : st.filterDiff} • ${st.filterLeague !== 'ALL' ? st.filterLeague : (st.filterRegion !== 'ALL' ? st.filterRegion : 'عالمي')}`;
 
   container.innerHTML = `
     <div id="quiz-license-banner-wrap">${renderLicenseBannerHtml()}</div>
 
-    <div class="quiz-lobby-card" style="padding:14px;">
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:10px; padding-bottom:8px; border-bottom:1px solid var(--card-border);">
+    <div class="quiz-lobby-card">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--card-border);">
         <div>
-          <h3 style="font-size:1rem; font-weight:900; color:#fff; margin:0;">🏟️ إعدادات المسابقة الكروية</h3>
-          <div style="font-size:0.7rem; color:var(--muted);">اسحب الأشرطة أفقياً للتخصيص (${st.totalPoolCount}+ سؤال متجدد)</div>
+          <h3 style="font-size:1.05rem; font-weight:800; margin:0;">ساحة التحدي الكروي</h3>
+          <div style="font-size:0.74rem; color:var(--muted);">
+            متاح حالياً: <strong style="color:var(--accent-green);">${catCountNow > 0 ? catCountNow + ' سؤال' : 'جاهز للتوليد'}</strong>
+          </div>
         </div>
-        <label style="display:inline-flex; align-items:center; gap:5px; background:#070c18; border:1px solid var(--accent-cyan); padding:4px 10px; border-radius:99px; cursor:pointer; font-size:0.72rem; font-weight:800; color:var(--accent-cyan);">
+        <label style="display:inline-flex; align-items:center; gap:5px; background:var(--surface-inset); border:1px solid var(--card-border-strong); padding:4px 10px; border-radius:99px; cursor:pointer; font-size:0.72rem; font-weight:700; color:${st.aiAvailable ? 'var(--accent-cyan)' : 'var(--muted)'};">
           <input type="checkbox" ${st.useAiGenerator ? 'checked' : ''} onchange="window.setQuizLobbyParam('useAiGenerator', this.checked)" style="accent-color:var(--accent-green);">
-          <span>🤖 أسئلة Gemini AI</span>
+          <span>توليد Gemini AI ${st.aiAvailable ? '' : '(غير مفعل)'}</span>
         </label>
       </div>
 
-      <!-- 1. شريط أفقي مدمج لأطوار اللعب -->
-      <div style="font-size:0.76rem; font-weight:900; color:var(--accent-cyan); margin-bottom:4px;">1️⃣ طور المنافسة (اسحب أفقياً ⬅️):</div>
+      ${st.fallbackNotice ? `
+        <div style="background:var(--accent-gold-soft); border:1px solid rgba(245,158,11,0.35); color:var(--accent-gold-bright); padding:8px 12px; border-radius:10px; font-size:0.75rem; font-weight:700; margin-bottom:10px;">
+          ${escapeHtml(st.fallbackNotice)}
+        </div>
+      ` : ''}
+
+      <!-- الخطوة 1: طور المنافسة -->
+      <div style="font-size:0.78rem; font-weight:800; color:var(--text-secondary); margin-bottom:6px;">1. اختر طور المنافسة</div>
       <div class="quiz-h-strip">
         ${modes.map(m => `
           <button type="button" class="q-chip-item ${st.gameMode === m.key ? 'active' : ''}" onclick="window.setQuizLobbyParam('gameMode', '${m.key}')">
-            <span>${m.icon}</span>
-            <span>${m.title}</span>
+            <span>${m.icon}</span><span>${m.title}</span>
           </button>
         `).join('')}
       </div>
@@ -2831,9 +3929,9 @@ function renderCleanQuizLobby(container) {
       ${st.gameMode === 'ai_bot' ? `
         <div class="quiz-h-strip">
           ${[
-            { k: 'rookie', l: '🟢 بوت مبتدئ (60%)' },
-            { k: 'tactician', l: '🟡 محلل تكتيكي (78%)' },
-            { k: 'legend', l: '🔴 بوت أسطوري (92%)' }
+            { k: 'rookie', l: 'بوت مبتدئ (60%)' },
+            { k: 'tactician', l: 'محلل تكتيكي (78%)' },
+            { k: 'legend', l: 'بوت أسطوري (92%)' }
           ].map(b => `
             <button type="button" class="q-chip-item ${st.botDifficulty === b.k ? 'active-cyan' : ''}" onclick="window.setQuizLobbyParam('botDifficulty', '${b.k}')">${b.l}</button>
           `).join('')}
@@ -2841,58 +3939,64 @@ function renderCleanQuizLobby(container) {
       ` : ''}
 
       ${st.gameMode === 'friend_code' ? `
-        <div style="display:flex; gap:8px; align-items:center; background:#070c18; border:1px solid var(--accent-gold); padding:6px 12px; border-radius:12px; margin-bottom:8px;">
-          <span style="font-size:0.74rem; font-weight:800; color:var(--accent-gold);">🔗 كود التحدي:</span>
-          <input type="text" value="${st.challengeSeed}" oninput="window._quizState.challengeSeed = this.value.trim().toUpperCase()" placeholder="DP-4821" class="lobby-select-input" style="padding:4px 8px; font-size:0.78rem; max-width:130px; text-align:center;">
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; background:var(--surface-inset); border:1px solid rgba(245,158,11,0.4); padding:8px 12px; border-radius:12px; margin-bottom:10px;">
+          <span style="font-size:0.76rem; font-weight:800; color:var(--accent-gold-bright);">كود التحدي:</span>
+          <input type="text" value="${escapeHtml(st.challengeSeed)}" oninput="window._quizState.challengeSeed = this.value.trim().toUpperCase()" placeholder="DP-4821" class="lobby-select-input" style="padding:4px 8px; font-size:0.8rem; max-width:120px; text-align:center;">
+          <span style="font-size:0.7rem; color:var(--muted);">شارك نفس الكود والفئة مع صديقك لأسئلة متطابقة 100%</span>
         </div>
       ` : ''}
 
-      <!-- 2. شريط أفقي للفئات الـ 12 -->
-      <div style="font-size:0.76rem; font-weight:900; color:var(--accent-cyan); margin-bottom:4px;">2️⃣ فئة الأسئلة (12 فئة — اسحب أفقياً ⬅️):</div>
+      <!-- الخطوة 2: فئة الأسئلة -->
+      <div style="font-size:0.78rem; font-weight:800; color:var(--text-secondary); margin-bottom:6px;">2. اختر فئة الأسئلة</div>
       <div class="quiz-h-strip">
-        ${Object.entries(QUIZ_CATEGORIES_META).map(([k, v]) => `
-          <div class="q-cat-card-compact ${st.filterCategory === k ? 'active' : ''}" onclick="window.setQuizLobbyParam('filterCategory', '${k}')">
-            <span style="font-size:1.2rem;">${v.icon}</span>
-            <div style="min-width:0;">
-              <div style="font-weight:900; font-size:0.76rem; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${v.name}</div>
-              <div style="font-size:0.63rem; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${v.sub}</div>
+        ${Object.entries(QUIZ_CATEGORIES_META).map(([k, v]) => {
+          const cnt = k === 'ALL' ? (st.totalPoolCount || '') : ((st.categoryCounts && st.categoryCounts[k.toLowerCase()]) || '');
+          return `
+            <div class="q-cat-card-compact ${st.filterCategory === k ? 'active' : ''}" onclick="window.setQuizLobbyParam('filterCategory', '${k}')">
+              <span style="font-size:1.2rem;">${v.icon}</span>
+              <div style="min-width:0; flex:1;">
+                <div style="font-weight:800; font-size:0.76rem; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${v.name}</div>
+                <div style="font-size:0.64rem; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${cnt ? `${cnt} سؤال • ` : ''}${v.sub}</div>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+
+      <!-- زر البدء السريع مباشرة بدون تمرير طويل -->
+      <div style="text-align:center; margin:14px 0 12px 0;">
+        <button type="button" class="quiz-start-hero-btn" onclick="window.startQuizChallengeNow()">
+          <span>ابدأ التحدي الآن (${(QUIZ_CATEGORIES_META[st.filterCategory] || QUIZ_CATEGORIES_META['ALL']).name})</span>
+        </button>
+      </div>
+
+      <!-- خيارات متقدمة قابلة للطي (القارة + البطولة + الصعوبة + عدد الأسئلة) -->
+      <div style="border-top:1px solid var(--card-border); padding-top:10px;">
+        <button type="button" onclick="window.toggleQuizAdvancedFilters()" style="width:100%; background:var(--surface-inset); border:1px solid var(--card-border); color:var(--text-secondary); padding:8px 12px; border-radius:10px; font-size:0.78rem; font-weight:700; cursor:pointer; display:flex; justify-content:space-between; align-items:center;">
+          <span>تخصيص النطاق والصعوبة (${advSummary})</span>
+          <span style="color:var(--accent-green);">${window._quizAdvancedOpen ? 'إخفاء ▲' : 'تخصيص ▼'}</span>
+        </button>
+
+        ${window._quizAdvancedOpen ? `
+          <div style="margin-top:10px;">
+            <div style="font-size:0.74rem; color:var(--muted); font-weight:700; margin-bottom:5px;">القارة أو البطولة:</div>
+            <div class="quiz-h-strip">
+              ${regions.map(r => `<button type="button" class="q-chip-item ${st.filterRegion === r.key ? 'active-gold' : ''}" onclick="window.setQuizLobbyParam('filterRegion', '${r.key}')">${r.label}</button>`).join('')}
+              ${leagues.map(lg => `<button type="button" class="q-chip-item ${st.filterLeague === lg.key ? 'active-cyan' : ''}" onclick="window.setQuizLobbyParam('filterLeague', '${lg.key}')">${lg.label}</button>`).join('')}
+            </div>
+
+            <div style="font-size:0.74rem; color:var(--muted); font-weight:700; margin-bottom:5px;">الصعوبة وعدد الأسئلة:</div>
+            <div class="quiz-h-strip" style="margin-bottom:0;">
+              ${[
+                { k: 'ALL', l: 'كل المستويات' },
+                { k: 'easy', l: 'سهل' },
+                { k: 'medium', l: 'متوسط' },
+                { k: 'hard', l: 'صعب' }
+              ].map(d => `<button type="button" class="q-chip-item ${st.filterDiff === d.k ? 'active' : ''}" onclick="window.setQuizLobbyParam('filterDiff', '${d.k}')">${d.l}</button>`).join('')}
+              ${[10, 20, 35].map(n => `<button type="button" class="q-chip-item ${st.sessionLength === n ? 'active-gold' : ''}" onclick="window.setQuizLobbyParam('sessionLength', ${n})">${n} سؤال</button>`).join('')}
             </div>
           </div>
-        `).join('')}
-      </div>
-
-      <!-- 3. شريط أفقي مدمج للنطاق القاري والبطولة (سطر أفقي رفيع قابل للسحب) -->
-      <div style="font-size:0.76rem; font-weight:900; color:var(--accent-cyan); margin-bottom:4px;">3️⃣ النطاق القاري والبطولة (اسحب أفقياً ⬅️):</div>
-      <div class="quiz-h-strip">
-        ${regions.map(r => `
-          <button type="button" class="q-chip-item ${st.filterRegion === r.key ? 'active-gold' : ''}" onclick="window.setQuizLobbyParam('filterRegion', '${r.key}')">${r.label}</button>
-        `).join('')}
-        <span style="color:#334155; font-weight:900; padding:0 2px;">|</span>
-        ${leagues.map(lg => `
-          <button type="button" class="q-chip-item ${st.filterLeague === lg.key ? 'active-cyan' : ''}" onclick="window.setQuizLobbyParam('filterLeague', '${lg.key}')">${lg.label}</button>
-        `).join('')}
-      </div>
-
-      <!-- 4. شريط أفقي للصعوبة وعدد الأسئلة -->
-      <div class="quiz-h-strip" style="margin-bottom:10px;">
-        ${[
-          { k: 'ALL', l: '🎚️ كل المستويات' },
-          { k: 'easy', l: '🟢 سهل' },
-          { k: 'medium', l: '🟡 متوسط' },
-          { k: 'hard', l: '🔴 صعب' }
-        ].map(d => `
-          <button type="button" class="q-chip-item ${st.filterDiff === d.k ? 'active' : ''}" onclick="window.setQuizLobbyParam('filterDiff', '${d.k}')">${d.l}</button>
-        `).join('')}
-        <span style="color:#334155; font-weight:900; padding:0 2px;">|</span>
-        ${[10, 20, 35].map(n => `
-          <button type="button" class="q-chip-item ${st.sessionLength === n ? 'active-gold' : ''}" onclick="window.setQuizLobbyParam('sessionLength', ${n})">🔢 ${n} سؤال</button>
-        `).join('')}
-      </div>
-
-      <div style="text-align:center; padding-top:4px;">
-        <button type="button" class="quiz-start-hero-btn" onclick="window.startQuizChallengeNow()">
-          <span>🚀 ابدأ التحدي الآن (${(QUIZ_CATEGORIES_META[st.filterCategory] || QUIZ_CATEGORIES_META['ALL']).name})</span>
-        </button>
+        ` : ''}
       </div>
     </div>
   `;
@@ -2903,35 +4007,57 @@ window.startQuizChallengeNow = async function() {
   const startBtn = document.querySelector('.quiz-start-hero-btn');
   if (startBtn) {
     startBtn.disabled = true;
-    startBtn.innerHTML = '<span>⏳ جاري سحب دفعة أسئلة حية من السيرفر...</span>';
+    startBtn.innerHTML = '<span>⏳ جاري تجهيز الأسئلة الحية من السيرفر...</span>';
   }
 
+  let fetchFailed = false;
   try {
     const data = await fetchQuizBankFromBackend();
     if (data && data.status === 'success' && Array.isArray(data.questions) && data.questions.length > 0) {
       st.pool = data.questions;
       st.totalPoolCount = data.total_pool_size || data.questions.length;
-      if (data.seed_code) st.challengeSeed = data.seed_code;
+      st.categoryCounts = data.category_counts || st.categoryCounts;
+      st.aiAvailable = data.ai_available !== false;
+      if (data.seed_code && st.gameMode !== 'friend_code') st.challengeSeed = data.seed_code;
+      st.fallbackNotice = data.fallback_used
+        ? 'ℹ️ لم يتوفر عدد كافٍ في الفلتر الدقيق المختار، فتم توسيع النطاق تلقائياً لتجهيز الجولة.'
+        : '';
+    } else {
+      fetchFailed = true;
     }
   } catch (e) {
     console.error('Failed to fetch from /api/quiz_bank:', e);
+    fetchFailed = true;
   }
 
-  const seenIds = getSeenQuizIds();
-  let unseenPool = (st.pool || []).filter(q => !seenIds.includes(q.id));
-
-  if (unseenPool.length < (st.sessionLength || 10)) {
-    const currentPoolIds = new Set((st.pool || []).map(q => q.id));
-    const remainingSeen = seenIds.filter(id => !currentPoolIds.has(id));
-    localStorage.setItem('deeppitch_seen_qids', JSON.stringify(remainingSeen));
-    unseenPool = [...(st.pool || [])];
+  if (fetchFailed && (!st.pool || st.pool.length === 0)) {
+    st.fallbackNotice = '❌ تعذر الاتصال بالسيرفر لجلب الأسئلة، يرجى المحاولة مرة أخرى.';
+    renderQuizArenaWorkspace();
+    return;
   }
 
-  const seedToUse = st.gameMode === 'friend_code' ? st.challengeSeed : '';
-  const ordered = shuffleQuizArray(unseenPool, seedToUse).map(q => {
+  const isFriendMode = (st.gameMode === 'friend_code');
+  const seedToUse = isFriendMode ? (st.challengeSeed || 'DP-2026') : '';
+
+  let candidatePool = [];
+  if (isFriendMode) {
+    candidatePool = [...(st.pool || [])].sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
+  } else {
+    const seenIds = getSeenQuizIds();
+    candidatePool = (st.pool || []).filter(q => !seenIds.includes(q.id));
+    if (candidatePool.length < (st.sessionLength || 10)) {
+      const currentPoolIds = new Set((st.pool || []).map(q => q.id));
+      const remainingSeen = seenIds.filter(id => !currentPoolIds.has(id));
+      localStorage.setItem('deeppitch_seen_qids', JSON.stringify(remainingSeen));
+      candidatePool = [...(st.pool || [])];
+    }
+  }
+
+  const ordered = shuffleQuizArray(candidatePool, seedToUse).map(q => {
     const copy = { ...q };
     if (Array.isArray(copy.options) && copy.options.length > 2) {
-      copy.options = shuffleQuizArray(copy.options, seedToUse ? `${seedToUse}_${copy.id}` : '');
+      const baseOpts = isFriendMode ? [...copy.options].sort() : [...copy.options];
+      copy.options = shuffleQuizArray(baseOpts, seedToUse ? `${seedToUse}_${copy.id}` : '');
     }
     return copy;
   });
@@ -2940,6 +4066,7 @@ window.startQuizChallengeNow = async function() {
   st.activeQueue = ordered.slice(0, Math.max(1, maxLen));
 
   if (st.activeQueue.length === 0) {
+    st.fallbackNotice = '⚠️ لا توجد أسئلة متاحة لهذا الاختيار حالياً.';
     renderQuizArenaWorkspace();
     return;
   }
@@ -2978,6 +4105,14 @@ window.finishQuizSessionToSummary = function() {
   renderQuizArenaWorkspace();
 };
 
+function getQuestionBasePoints(q, st) {
+  if (!q) return 1;
+  if (q.type === 'three_clues') return Math.max(1, 4 - (st.clueStage || 1));
+  if (q.difficulty === 'hard') return 3;
+  if (q.difficulty === 'medium') return 2;
+  return 1;
+}
+
 function simulateBotTurnForQuestion(q, basePts) {
   const st = window._quizState;
   if (st.gameMode !== 'ai_bot') return;
@@ -2986,10 +4121,12 @@ function simulateBotTurnForQuestion(q, basePts) {
   if (hit) {
     st.botScore += basePts;
     st.botCorrect += 1;
-    st.botLastAction = `✅ البوت أصاب (+${basePts})`;
+    st.botLastAction = `🤖 البوت أصاب (+${basePts})`;
   } else {
-    st.botLastAction = `❌ البوت أخطأ`;
+    st.botLastAction = `🤖 البوت أخطأ (0)`;
   }
+  const botHud = document.getElementById('quiz-bot-hud-score');
+  if (botHud) botHud.innerText = st.botScore;
 }
 
 function renderCurrentQuizQuestion() {
@@ -3005,16 +4142,19 @@ function renderCurrentQuizQuestion() {
   }
 
   const q = st.activeQueue[st.currentIndex];
-  markQuizQuestionSeen(q.id);
+  if (st.gameMode !== 'friend_code') {
+    markQuizQuestionSeen(q.id);
+  }
 
   st.answeredCurrent = false;
+  st.usedLifelinesThisQ = { fifty: false, hint: false, freeze: false };
   st.blurLevel = 14;
   st.clueStage = 1;
   st.rankSelection = [];
   st.blitzFound = [];
   st.questionStartTs = Date.now();
 
-  const catInfo = QUIZ_CATEGORIES_META[q.category] || QUIZ_CATEGORIES_META['ALL'];
+  const catInfo = QUIZ_CATEGORIES_META[q.category] || QUIZ_CATEGORIES_META['trivia'];
   const totalSec = q.type === 'blitz_30s' ? 30 : 20;
 
   let visualStageHtml = '';
@@ -3026,8 +4166,8 @@ function renderCurrentQuizQuestion() {
         ${q.career_stops.map((stItem, i) => `
           <div class="career-club-card">
             <span class="career-step-badge">محطة #${i + 1}</span>
-            <img src="${stItem.crest}" alt="${stItem.club}" onerror="this.src='https://ui-avatars.com/api/?name=FC&background=1e293b&color=00e676&bold=true&rounded=true'">
-            <div class="career-club-title">${stItem.club}</div>
+            <img src="${stItem.crest}" alt="${escapeHtml(stItem.club)}" onerror="this.src='https://ui-avatars.com/api/?name=FC&background=1e293b&color=00e676&bold=true&rounded=true'">
+            <div class="career-club-title">${escapeHtml(stItem.club)}</div>
           </div>
           ${i < q.career_stops.length - 1 ? `<span class="career-step-arrow">⬅️</span>` : ''}
         `).join('')}
@@ -3036,7 +4176,7 @@ function renderCurrentQuizQuestion() {
   } else if (q.type === 'logo_blur') {
     visualStageHtml = `
       <div class="quiz-visual-center">
-        <img id="quiz-mystery-crest" src="${q.image_url}" style="filter: blur(${st.blurLevel}px); transition: filter 0.35s ease; width:88px; height:88px; object-fit:contain;">
+        <img id="quiz-mystery-crest" src="${q.image_url}" style="filter: blur(${st.blurLevel}px); transition: filter 0.35s ease; width:88px; height:88px; object-fit:contain;" onerror="this.src='https://ui-avatars.com/api/?name=FC&background=0f172a&color=00d2ff&bold=true&rounded=true'">
       </div>
     `;
   } else if (q.type === 'jersey_card') {
@@ -3047,8 +4187,8 @@ function renderCurrentQuizQuestion() {
           <div class="jersey-num-txt">#${q.jersey_num}</div>
         </div>
         <div style="text-align:right;">
-          <div style="font-size:0.75rem; color:var(--muted);">النادي / المنتخب:</div>
-          <div style="font-size:0.95rem; font-weight:900; color:#fff;">${q.jersey_club}</div>
+          <div style="font-size:0.75rem; color:var(--muted);">النادي:</div>
+          <div style="font-size:0.95rem; font-weight:900; color:#fff;">${escapeHtml(q.jersey_club)}</div>
         </div>
       </div>
     `;
@@ -3056,14 +4196,14 @@ function renderCurrentQuizQuestion() {
     visualStageHtml = `
       <div class="quiz-visual-center" style="justify-content:space-around;">
         <div style="text-align:center;">
-          ${q.item_a.crest ? `<img src="${q.item_a.crest}" width="42" height="42" style="object-fit:contain;">` : ''}
-          <div style="font-weight:900; font-size:0.86rem; color:#fff;">${q.item_a.name}</div>
+          ${q.item_a.crest ? `<img src="${q.item_a.crest}" width="42" height="42" style="object-fit:contain;" onerror="this.style.display='none'">` : ''}
+          <div style="font-weight:900; font-size:0.86rem; color:#fff;">${escapeHtml(q.item_a.name)}</div>
           <div style="font-size:1.3rem; font-weight:900; color:var(--accent-green);">${q.item_a.stat_val}</div>
         </div>
         <div class="vs-circle-badge" style="width:36px; height:36px; font-size:0.8rem;">VS</div>
         <div style="text-align:center;">
-          ${q.item_b.crest ? `<img src="${q.item_b.crest}" width="42" height="42" style="object-fit:contain;">` : ''}
-          <div style="font-weight:900; font-size:0.86rem; color:#fff;">${q.item_b.name}</div>
+          ${q.item_b.crest ? `<img src="${q.item_b.crest}" width="42" height="42" style="object-fit:contain;" onerror="this.style.display='none'">` : ''}
+          <div style="font-weight:900; font-size:0.86rem; color:#fff;">${escapeHtml(q.item_b.name)}</div>
           <div id="hl-mystery-val" style="font-size:1.3rem; font-weight:900; color:var(--accent-gold);">❓</div>
         </div>
       </div>
@@ -3073,12 +4213,12 @@ function renderCurrentQuizQuestion() {
     visualStageHtml = `
       <div style="margin-bottom:10px;">
         <div id="clues-stack-list" style="display:flex; flex-direction:column; gap:6px; margin-bottom:8px;">
-          <div class="clue-item-card">🔎 ${clues[0] || ''}</div>
+          <div class="clue-item-card">🔎 ${escapeHtml(clues[0] || '')}</div>
         </div>
         ${clues.length > 1 ? `
           <div style="text-align:center;">
-            <button type="button" id="reveal-next-clue-btn" class="dock-lifeline-btn" onclick="window.revealNextProgressiveClue()" style="border-color:var(--accent-gold); color:var(--accent-gold);">
-              🔓 كشف الدليل التالي
+            <button type="button" id="reveal-next-clue-btn" class="dock-lifeline-btn" onclick="window.revealNextProgressiveClue(false)" style="border-color:var(--accent-gold); color:var(--accent-gold);">
+              🔓 كشف الدليل التالي (يقلل النقاط -1)
             </button>
           </div>
         ` : ''}
@@ -3086,16 +4226,17 @@ function renderCurrentQuizQuestion() {
     `;
   } else if (q.type === 'rank_order') {
     customOptionsHtml = `
-      <div style="text-align:center; margin-bottom:8px;">
-        <button type="button" class="dock-lifeline-btn" onclick="window.resetRankOrderSelection()">🔄 إعادة ترتيب</button>
+      <div style="display:flex; justify-content:center; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap;">
+        <span style="font-size:0.72rem; color:var(--muted);">انقر بالترتيب من #1 إلى #4 (يمكنك النقر مجدداً لإلغاء اختيار عنصر)</span>
+        <button type="button" class="dock-lifeline-btn" onclick="window.resetRankOrderSelection()">🔄 إعادة الكل</button>
       </div>
       <div class="quiz-options-grid" id="rank-order-grid">
         ${(q.rank_items || []).map((item, idx) => `
           <button type="button" class="quiz-option-btn rank-item-btn" id="rank-btn-${idx}" onclick="window.onRankItemClick(${idx})">
             <span class="opt-letter" id="rank-badge-${idx}">?</span>
-            <div class="opt-text" style="display:flex; justify-content:space-between; align-items:center;">
-              <span>${item.label}</span>
-              <span class="rank-secret-val" style="display:none; color:var(--accent-gold); font-size:0.75rem;">${item.val}</span>
+            <div class="opt-text" style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+              <span>${escapeHtml(item.label)}</span>
+              <span class="rank-secret-val" style="display:none; color:var(--accent-gold); font-size:0.74rem;">${escapeHtml(item.val)}</span>
             </div>
           </button>
         `).join('')}
@@ -3108,7 +4249,7 @@ function renderCurrentQuizQuestion() {
           <span style="font-size:0.84rem; font-weight:900; color:var(--accent-green);">⚡ المكتشف: <strong id="blitz-counter-num">0</strong></span>
           <button type="button" class="dock-lifeline-btn" onclick="window.finishBlitzRound()">إنهاء والانتقال للتالي ⬅️</button>
         </div>
-        <input type="text" id="blitz-live-input" class="quiz-blitz-input" style="padding:9px 12px; font-size:0.86rem; margin-bottom:8px;" placeholder="✍️ اكتب اسم النادي هنا..." oninput="window.onBlitzInputType(this.value)" autocomplete="off">
+        <input type="text" id="blitz-live-input" class="quiz-blitz-input" style="padding:9px 12px; font-size:0.86rem; margin-bottom:8px; width:100%;" placeholder="✍️ اكتب اسم النادي بالعربية أو الإنجليزية (مثل: الريال، برشلونة، ليفربول...)" oninput="window.onBlitzInputType(this.value)" autocomplete="off">
         <div id="blitz-tags-cloud" class="blitz-tags-cloud"></div>
       </div>
     `;
@@ -3121,7 +4262,7 @@ function renderCurrentQuizQuestion() {
         ${(q.options || []).map((opt, idx) => `
           <button type="button" class="quiz-option-btn" id="quiz-opt-btn-${idx}" onclick="window.submitQuizAnswer(${idx})">
             <span class="opt-letter">${['أ', 'ب', 'ج', 'د'][idx] || '•'}</span>
-            <span class="opt-text">${String(opt)}</span>
+            <span class="opt-text">${escapeHtml(String(opt))}</span>
           </button>
         `).join('')}
       </div>
@@ -3133,13 +4274,19 @@ function renderCurrentQuizQuestion() {
         <div id="quiz-neon-timer-bar" class="quiz-neon-timer-fill" style="width:100%;"></div>
       </div>
 
-      <!-- الشريط العلوي المدمج (HUD) -->
+      ${st.fallbackNotice && st.currentIndex === 0 ? `
+        <div style="background:rgba(255,214,0,0.08); border:1px solid rgba(255,214,0,0.3); color:var(--accent-gold); padding:5px 10px; border-radius:8px; font-size:0.72rem; font-weight:700; margin-bottom:8px; text-align:center;">
+          ${escapeHtml(st.fallbackNotice)}
+        </div>
+      ` : ''}
+
       <div class="quiz-hud-bar">
-        <div style="display:flex; align-items:center; gap:6px;">
+        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
           <button type="button" class="hud-chip" onclick="window.returnToQuizLobby()" style="cursor:pointer;">⚙️ القائمة</button>
           <span class="hud-chip">${st.currentIndex + 1} / ${st.activeQueue.length}</span>
+          ${st.streak >= 2 ? `<span class="hud-chip" style="border-color:#ff9100; color:#ff9100;">🔥 ×${st.streak}</span>` : ''}
           ${st.gameMode === 'survival' ? `<span class="hud-chip">${'❤️'.repeat(st.lives)}</span>` : ''}
-          ${st.gameMode === 'ai_bot' ? `<span class="hud-chip" style="border-color:var(--accent-cyan); color:var(--accent-cyan);">🤖 البوت: ${st.botScore}</span>` : ''}
+          ${st.gameMode === 'ai_bot' ? `<span class="hud-chip" style="border-color:var(--accent-cyan); color:var(--accent-cyan);">🤖 البوت: <strong id="quiz-bot-hud-score">${st.botScore}</strong></span>` : ''}
         </div>
 
         <div style="display:flex; align-items:center; gap:6px;">
@@ -3148,22 +4295,17 @@ function renderCurrentQuizQuestion() {
         </div>
       </div>
 
-      <!-- صندوق نص السؤال -->
       <div class="quiz-question-box">
         <span class="quiz-cat-tag">${catInfo.icon} ${catInfo.name}</span>
-        <h3 class="quiz-question-title">${q.question}</h3>
+        <h3 class="quiz-question-title">${escapeHtml(q.question)}</h3>
       </div>
 
-      <!-- المسرح البصري -->
       ${visualStageHtml}
-
-      <!-- شبكة الخيارات 2×2 -->
       ${optionsGridHtml}
 
-      <!-- شريط المساعدات السفلي المدمج -->
-      ${!['blitz_30s', 'rank_order'].includes(q.type) ? `
+      ${q.type !== 'blitz_30s' ? `
         <div class="quiz-lifelines-dock">
-          ${q.options && q.options.length > 2 ? `
+          ${q.type !== 'rank_order' && q.options && q.options.length > 2 ? `
             <button type="button" id="lf-btn-fifty" class="dock-lifeline-btn" onclick="window.useQuizLifeline('fifty')" ${st.lifelines.fifty <= 0 ? 'disabled' : ''}>✂️ 50:50 (${st.lifelines.fifty})</button>
           ` : ''}
           <button type="button" id="lf-btn-hint" class="dock-lifeline-btn" onclick="window.useQuizLifeline('hint')" ${st.lifelines.hint <= 0 ? 'disabled' : ''}>💡 تلميح (${st.lifelines.hint})</button>
@@ -3182,7 +4324,6 @@ function renderCurrentQuizQuestion() {
   }
 }
 
-// دالة التحقق الفوري من الإجابة عند النقر على أي خيار
 window.submitQuizAnswer = function(optIdx) {
   const st = window._quizState;
   if (!st || st.answeredCurrent) return;
@@ -3216,60 +4357,94 @@ window.submitQuizAnswer = function(optIdx) {
     }
   });
 
-  const basePts = q.type === 'three_clues'
-    ? Math.max(1, 4 - (st.clueStage || 1))
-    : (q.difficulty === 'hard' ? 3 : (q.difficulty === 'medium' ? 2 : 1));
-
+  const basePts = getQuestionBasePoints(q, st);
   finalizeQuestionScoreAndFeedback(isCorrect, q, basePts, chosen);
 };
 
-window.revealNextProgressiveClue = function() {
+window.revealNextProgressiveClue = function(isFreeFromLifeline = false) {
   const st = window._quizState;
   if (st.answeredCurrent) return;
   const q = st.activeQueue[st.currentIndex];
   if (!q || !q.clues) return;
-  if (st.clueStage < q.clues.length) {
-    st.clueStage += 1;
-    const listEl = document.getElementById('clues-stack-list');
+
+  const listEl = document.getElementById('clues-stack-list');
+  const shownCount = listEl ? listEl.children.length : 1;
+  if (shownCount < q.clues.length) {
+    if (!isFreeFromLifeline) {
+      st.clueStage += 1;
+    }
     if (listEl) {
       const div = document.createElement('div');
       div.className = 'clue-item-card';
-      div.innerText = `🔎 ${q.clues[st.clueStage - 1]}`;
+      div.innerText = `🔎 ${q.clues[shownCount]}`;
       listEl.appendChild(div);
     }
-    if (st.clueStage >= q.clues.length) {
+    if (shownCount + 1 >= q.clues.length) {
       const btn = document.getElementById('reveal-next-clue-btn');
       if (btn) btn.style.display = 'none';
     }
   }
 };
 
+function redrawRankBadgesUI() {
+  const st = window._quizState;
+  document.querySelectorAll('.rank-item-btn').forEach((btn, i) => {
+    const selPos = st.rankSelection.findIndex(x => x.idx === i);
+    const bdg = document.getElementById(`rank-badge-${i}`);
+    if (selPos >= 0) {
+      btn.classList.add('rank-selected-btn');
+      if (bdg) {
+        bdg.innerText = `#${selPos + 1}`;
+        bdg.style.background = 'var(--accent-gold)';
+        bdg.style.color = '#000';
+      }
+    } else {
+      btn.classList.remove('rank-selected-btn');
+      if (bdg) {
+        bdg.innerText = '?';
+        bdg.style.background = '#050811';
+        bdg.style.color = 'var(--accent-cyan)';
+      }
+    }
+  });
+}
+
 window.onRankItemClick = function(idx) {
   const st = window._quizState;
   if (st.answeredCurrent) return;
   const q = st.activeQueue[st.currentIndex];
   if (!q || q.type !== 'rank_order' || !Array.isArray(q.rank_items)) return;
-  if (st.rankSelection.some(x => x.idx === idx)) return;
+
+  const existingPos = st.rankSelection.findIndex(x => x.idx === idx);
+  if (existingPos >= 0) {
+    st.rankSelection.splice(existingPos, 1);
+    redrawRankBadgesUI();
+    return;
+  }
 
   const label = q.rank_items[idx] ? q.rank_items[idx].label : '';
   st.rankSelection.push({ idx, label });
-  const btn = document.getElementById(`rank-btn-${idx}`);
-  const badge = document.getElementById(`rank-badge-${idx}`);
-  if (btn) btn.classList.add('rank-selected-btn');
-  if (badge) {
-    badge.innerText = `#${st.rankSelection.length}`;
-    badge.style.background = 'var(--accent-gold)';
-    badge.style.color = '#000';
-  }
+  redrawRankBadgesUI();
 
   if (st.rankSelection.length === q.rank_items.length) {
     st.answeredCurrent = true;
     stopQuizTimer();
     const userOrder = st.rankSelection.map(x => x.label);
     const isCorrect = JSON.stringify(userOrder) === JSON.stringify(q.correct_order);
-    document.querySelectorAll('.rank-item-btn').forEach(b => {
-      b.disabled = true;
-      b.classList.add(isCorrect ? 'opt-correct' : 'opt-wrong');
+
+    st.rankSelection.forEach((selObj, posIdx) => {
+      const btn = document.getElementById(`rank-btn-${selObj.idx}`);
+      const bdg = document.getElementById(`rank-badge-${selObj.idx}`);
+      const trueIdx = (q.correct_order || []).indexOf(selObj.label);
+      const slotRight = (trueIdx === posIdx);
+      if (btn) {
+        btn.disabled = true;
+        btn.classList.remove('rank-selected-btn');
+        btn.classList.add(slotRight ? 'opt-correct' : 'opt-wrong');
+      }
+      if (bdg && trueIdx >= 0) {
+        bdg.innerText = `#${trueIdx + 1}`;
+      }
     });
     document.querySelectorAll('.rank-secret-val').forEach(el => { el.style.display = 'inline-block'; });
     finalizeQuestionScoreAndFeedback(isCorrect, q, 2, userOrder.join(' ⬅️ '));
@@ -3280,15 +4455,7 @@ window.resetRankOrderSelection = function() {
   const st = window._quizState;
   if (st.answeredCurrent) return;
   st.rankSelection = [];
-  document.querySelectorAll('.rank-item-btn').forEach((btn, i) => {
-    btn.classList.remove('rank-selected-btn');
-    const bdg = document.getElementById(`rank-badge-${i}`);
-    if (bdg) {
-      bdg.innerText = '?';
-      bdg.style.background = '#050811';
-      bdg.style.color = 'var(--accent-cyan)';
-    }
-  });
+  redrawRankBadgesUI();
 };
 
 function startQuizQuestionTimer(seconds) {
@@ -3319,25 +4486,32 @@ function startQuizQuestionTimer(seconds) {
   }, 1000);
 }
 
+function normalizeArabicQuizText(str) {
+  return String(str || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\u064B-\u065F\u0640]/g, '')
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي');
+}
+
 window.onBlitzInputType = function(rawVal) {
   const st = window._quizState;
   if (st.answeredCurrent) return;
   const q = st.activeQueue[st.currentIndex];
   if (!q || q.type !== 'blitz_30s') return;
 
-  const clean = (rawVal || '').trim().toLowerCase();
+  const clean = normalizeArabicQuizText(rawVal);
   if (clean.length < 3) return;
 
-  const matched = (q.accepted_answers || []).find(item => item.toLowerCase() === clean);
-  if (matched && !st.blitzFound.includes(matched.toLowerCase())) {
+  const matched = (q.accepted_answers || []).find(item => normalizeArabicQuizText(item) === clean);
+  const normMatched = matched ? normalizeArabicQuizText(matched) : '';
+  if (matched && !st.blitzFound.includes(normMatched)) {
     const oldLvl = computePlayerLevel500(st.profile.totalPoints).level;
-    st.blitzFound.push(matched.toLowerCase());
+    st.blitzFound.push(normMatched);
     st.score += 1;
-    st.roundCorrect += 1;
-    st.roundAnswered += 1;
     st.profile.totalPoints += 1;
-    st.profile.correctCount += 1;
-    st.profile.answeredCount += 1;
     saveQuizProfile();
 
     const newLvl = computePlayerLevel500(st.profile.totalPoints).level;
@@ -3367,14 +4541,50 @@ window.finishBlitzRound = function() {
   if (st.answeredCurrent) return;
   st.answeredCurrent = true;
   stopQuizTimer();
+
+  const q = st.activeQueue[st.currentIndex];
+  const foundCount = st.blitzFound.length;
+  const passed = foundCount > 0;
+
+  st.roundAnswered += 1;
+  st.profile.answeredCount += 1;
+  if (passed) {
+    st.roundCorrect += 1;
+    st.profile.correctCount += 1;
+    st.streak += 1;
+    if (st.streak > st.bestStreakInRound) st.bestStreakInRound = st.streak;
+  } else {
+    st.streak = 0;
+    if (st.gameMode === 'survival') st.lives -= 1;
+    playQuizSound('wrong');
+  }
+
+  st.historyLog.push({
+    question: q.question,
+    userAnswer: passed ? `اكتشف ${foundCount} أندية (+${foundCount} نقطة)` : '0 أندية',
+    correctAnswer: q.answer || '',
+    isCorrect: passed
+  });
+
+  saveQuizProfile();
+  window.refreshLiveLicenseBannerUI();
+  simulateBotTurnForQuestion(q, Math.max(2, Math.min(4, foundCount || 2)));
+
+  const isLastQ = (st.currentIndex + 1 >= st.activeQueue.length) || (st.gameMode === 'survival' && st.lives <= 0);
   const fb = document.getElementById('quiz-feedback-banner');
   if (fb) {
     fb.style.display = 'block';
-    fb.className = 'quiz-feedback-box fb-correct';
+    fb.className = `quiz-feedback-box ${passed ? 'fb-correct' : 'fb-wrong'}`;
     fb.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <span style="font-size:0.84rem;">✅ اكتشفت <strong>${st.blitzFound.length}</strong> أندية صحيحة!</span>
-        <button type="button" class="ai-btn" onclick="window.nextQuizQuestion()">التالي ⬅️</button>
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <div style="min-width:0;">
+          <div style="font-size:0.84rem; font-weight:900; color:${passed ? 'var(--accent-green)' : 'var(--accent-red)'};">
+            ${passed ? `✅ رائع! اكتشفت ${foundCount} أندية (+${foundCount} نقطة)` : '❌ لم تكتشف أي نادٍ في هذا التحدي!'}
+          </div>
+          <div style="font-size:0.74rem; color:#cbd5e1; margin-top:3px;">${escapeHtml(q.explanation || '')}</div>
+          ${st.gameMode === 'ai_bot' ? `<div style="font-size:0.72rem; color:var(--accent-cyan); font-weight:800; margin-top:2px;">${st.botLastAction}</div>` : ''}
+        </div>
+        <button type="button" class="ai-btn" onclick="window.nextQuizQuestion()" style="white-space:nowrap;">${isLastQ ? '🏁 النتيجة' : 'التالي ⬅️'}</button>
       </div>
     `;
   }
@@ -3382,11 +4592,12 @@ window.finishBlitzRound = function() {
 
 window.useQuizLifeline = function(type) {
   const st = window._quizState;
-  if (st.answeredCurrent || st.lifelines[type] <= 0) return;
+  if (st.answeredCurrent || st.lifelines[type] <= 0 || st.usedLifelinesThisQ[type]) return;
   const q = st.activeQueue[st.currentIndex];
   if (!q) return;
 
   st.lifelines[type] -= 1;
+  st.usedLifelinesThisQ[type] = true;
 
   if (type === 'fifty' && q.options && q.options.length > 2) {
     const correctAns = String(q.answer).trim().toLowerCase();
@@ -3402,31 +4613,94 @@ window.useQuizLifeline = function(type) {
       }
     });
     const btn = document.getElementById('lf-btn-fifty');
-    if (btn) btn.innerText = `✂️ 50:50 (${st.lifelines.fifty})`;
+    if (btn) { btn.innerText = `✂️ 50:50 (${st.lifelines.fifty})`; btn.disabled = true; }
   } else if (type === 'hint') {
-    if (q.type === 'three_clues') window.revealNextProgressiveClue();
-    else if (q.type === 'logo_blur') {
+    if (q.type === 'three_clues') {
+      window.revealNextProgressiveClue(true);
+    } else if (q.type === 'logo_blur') {
       st.blurLevel = Math.max(3, st.blurLevel - 7);
       const img = document.getElementById('quiz-mystery-crest');
       if (img) img.style.filter = `blur(${st.blurLevel}px)`;
     }
     const fb = document.getElementById('quiz-feedback-banner');
-    if (fb && q.type !== 'three_clues') {
+    if (fb && q.hint) {
       fb.style.display = 'block';
       fb.className = 'quiz-feedback-box';
-      fb.innerHTML = `<div style="color:var(--accent-gold); font-weight:800; font-size:0.8rem;">💡 تلميح: ${q.hint || ''}</div>`;
+      fb.innerHTML = `<div style="color:var(--accent-gold); font-weight:800; font-size:0.8rem;">💡 تلميح: ${escapeHtml(q.hint)}</div>`;
     }
     const btn = document.getElementById('lf-btn-hint');
-    if (btn) btn.innerText = `💡 تلميح (${st.lifelines.hint})`;
+    if (btn) { btn.innerText = `💡 تلميح (${st.lifelines.hint})`; btn.disabled = true; }
   } else if (type === 'freeze') {
     st.timerSec += 10;
     st.timerMax = Math.max(st.timerMax, st.timerSec);
     const el = document.getElementById('quiz-timer-sec');
     if (el) el.innerText = st.timerSec;
     const btn = document.getElementById('lf-btn-freeze');
-    if (btn) btn.innerText = `❄️ +10ث (${st.lifelines.freeze})`;
+    if (btn) { btn.innerText = `❄️ +10ث (${st.lifelines.freeze})`; btn.disabled = true; }
   }
 };
+
+function handleQuizTimeout() {
+  const st = window._quizState;
+  if (st.answeredCurrent) return;
+  st.answeredCurrent = true;
+  st.streak = 0;
+  st.roundAnswered += 1;
+  st.profile.answeredCount += 1;
+  if (st.gameMode === 'survival') st.lives -= 1;
+
+  const q = st.activeQueue[st.currentIndex];
+
+  const mysteryCrest = document.getElementById('quiz-mystery-crest');
+  if (mysteryCrest) mysteryCrest.style.filter = 'blur(0px)';
+  const hlVal = document.getElementById('hl-mystery-val');
+  if (hlVal && q && q.item_b) hlVal.innerText = q.item_b.stat_val;
+
+  if (q && Array.isArray(q.options)) {
+    const correctAns = String(q.answer).trim().toLowerCase();
+    q.options.forEach((optVal, idx) => {
+      const btn = document.getElementById(`quiz-opt-btn-${idx}`);
+      if (btn) {
+        btn.disabled = true;
+        if (String(optVal).trim().toLowerCase() === correctAns) {
+          btn.classList.add('opt-correct');
+        }
+      }
+    });
+  }
+  if (q && q.type === 'rank_order') {
+    document.querySelectorAll('.rank-item-btn').forEach(b => { b.disabled = true; });
+    document.querySelectorAll('.rank-secret-val').forEach(el => { el.style.display = 'inline-block'; });
+  }
+
+  st.historyLog.push({
+    question: q ? q.question : '',
+    userAnswer: 'انتهى الوقت ⌛',
+    correctAnswer: q ? q.answer : '',
+    isCorrect: false
+  });
+
+  saveQuizProfile();
+  window.refreshLiveLicenseBannerUI();
+  simulateBotTurnForQuestion(q, getQuestionBasePoints(q, st));
+  playQuizSound('wrong');
+
+  const isLastQ = (st.currentIndex + 1 >= st.activeQueue.length) || (st.gameMode === 'survival' && st.lives <= 0);
+  const fb = document.getElementById('quiz-feedback-banner');
+  if (fb) {
+    fb.style.display = 'block';
+    fb.className = 'quiz-feedback-box fb-wrong';
+    fb.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <div style="min-width:0;">
+          <div style="color:var(--accent-red); font-weight:900; font-size:0.84rem;">⌛ انتهى الوقت! الصحيح: ${escapeHtml(q ? q.answer : '')}</div>
+          ${st.gameMode === 'ai_bot' ? `<div style="font-size:0.72rem; color:var(--accent-cyan); font-weight:800; margin-top:2px;">${st.botLastAction}</div>` : ''}
+        </div>
+        <button type="button" class="ai-btn" onclick="window.nextQuizQuestion()" style="padding:7px 14px; white-space:nowrap;">${isLastQ ? '🏁 النتيجة' : 'التالي ⬅️'}</button>
+      </div>
+    `;
+  }
+}
 
 function finalizeQuestionScoreAndFeedback(isCorrect, q, basePts, userChosenText = '') {
   const st = window._quizState;
@@ -3476,6 +4750,11 @@ function finalizeQuestionScoreAndFeedback(isCorrect, q, basePts, userChosenText 
   if (scEl) scEl.innerText = st.score;
 
   const isLastQ = (st.currentIndex + 1 >= st.activeQueue.length) || (st.gameMode === 'survival' && st.lives <= 0);
+  const speedTag = speedBonus ? ' <span style="color:var(--accent-gold);">(⚡ +1 سرعة)</span>' : '';
+  const botTag = st.gameMode === 'ai_bot'
+    ? `<div style="font-size:0.72rem; color:var(--accent-cyan); font-weight:800; margin-top:3px;">${st.botLastAction}</div>`
+    : '';
+
   const fb = document.getElementById('quiz-feedback-banner');
   if (fb) {
     fb.style.display = 'block';
@@ -3484,51 +4763,14 @@ function finalizeQuestionScoreAndFeedback(isCorrect, q, basePts, userChosenText 
       <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
         <div style="min-width:0;">
           <div style="font-weight:900; font-size:0.86rem; color:${isCorrect ? 'var(--accent-green)' : 'var(--accent-red)'};">
-            ${isCorrect ? `✅ إجابة صحيحة! (+${deltaPts} نقطة)` : `❌ إجابة خاطئة! الصحيح: ${q.answer}`}
+            ${isCorrect ? `✅ إجابة صحيحة! (+${deltaPts} نقطة)${speedTag}` : `❌ إجابة خاطئة! الصحيح: ${escapeHtml(q.answer)}`}
           </div>
-          <div style="font-size:0.76rem; color:#cbd5e1; margin-top:2px;">${q.explanation || ''}</div>
+          <div style="font-size:0.76rem; color:#cbd5e1; margin-top:2px;">${escapeHtml(q.explanation || '')}</div>
+          ${botTag}
         </div>
         <button type="button" class="ai-btn" onclick="window.nextQuizQuestion()" style="white-space:nowrap; padding:7px 14px;">
           ${isLastQ ? '🏁 النتيجة' : 'التالي ⬅️'}
         </button>
-      </div>
-    `;
-  }
-}
-
-function handleQuizTimeout() {
-  const st = window._quizState;
-  if (st.answeredCurrent) return;
-  st.answeredCurrent = true;
-  st.streak = 0;
-  st.roundAnswered += 1;
-  if (st.gameMode === 'survival') st.lives -= 1;
-
-  const q = st.activeQueue[st.currentIndex];
-  if (q && Array.isArray(q.options)) {
-    const correctAns = String(q.answer).trim().toLowerCase();
-    q.options.forEach((optVal, idx) => {
-      const btn = document.getElementById(`quiz-opt-btn-${idx}`);
-      if (btn) {
-        btn.disabled = true;
-        if (String(optVal).trim().toLowerCase() === correctAns) {
-          btn.classList.add('opt-correct');
-        }
-      }
-    });
-  }
-
-  simulateBotTurnForQuestion(q, 2);
-  playQuizSound('wrong');
-
-  const fb = document.getElementById('quiz-feedback-banner');
-  if (fb) {
-    fb.style.display = 'block';
-    fb.className = 'quiz-feedback-box fb-wrong';
-    fb.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <span style="color:var(--accent-red); font-weight:900; font-size:0.84rem;">⌛ انتهى الوقت! الصحيح: ${q ? q.answer : ''}</span>
-        <button type="button" class="ai-btn" onclick="window.nextQuizQuestion()" style="padding:7px 14px;">التالي ⬅️</button>
       </div>
     `;
   }
@@ -3560,6 +4802,11 @@ function renderQuizPostMatchSummary() {
   const accPct = Math.round((st.roundCorrect / totalAns) * 100);
   const lvlObj = computePlayerLevel500(st.profile.totalPoints);
 
+  if (st.score > (st.profile.highScore || 0)) {
+    st.profile.highScore = st.score;
+    saveQuizProfile();
+  }
+
   let botBannerHtml = '';
   if (st.gameMode === 'ai_bot') {
     const won = st.score > st.botScore;
@@ -3574,13 +4821,34 @@ function renderQuizPostMatchSummary() {
     `;
   }
 
+  const reviewHtml = (st.historyLog || []).length > 0
+    ? `
+      <div style="text-align:right; margin-top:12px;">
+        <div style="font-size:0.84rem; font-weight:900; color:var(--accent-cyan); margin-bottom:6px;">📝 مراجعة إجاباتك في هذه الجولة (${st.historyLog.length} أسئلة):</div>
+        <div class="quiz-review-list">
+          ${st.historyLog.map((item, idx) => `
+            <div class="quiz-review-item ${item.isCorrect ? '' : 'rev-wrong'}">
+              <div style="font-weight:800; color:#fff; margin-bottom:3px;">${idx + 1}. ${escapeHtml(item.question)}</div>
+              <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px; font-size:0.73rem;">
+                <span style="color:${item.isCorrect ? 'var(--accent-green)' : 'var(--accent-red)'}; font-weight:800;">
+                  ${item.isCorrect ? '✅' : '❌'} إجابتك: ${escapeHtml(item.userAnswer)}
+                </span>
+                ${!item.isCorrect ? `<span style="color:var(--accent-gold); font-weight:800;">الصحيح: ${escapeHtml(item.correctAnswer)}</span>` : ''}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `
+    : '';
+
   stage.innerHTML = `
     <div class="quiz-stage-card quiz-slide-anim" style="text-align:center;">
       <span class="quiz-cat-tag">🏁 نهاية الجولة — المستوى ${lvlObj.level} / 500</span>
 
       ${botBannerHtml}
 
-      <div class="post-match-kpis-grid">
+      <div class="post-match-kpis-grid" style="grid-template-columns:repeat(auto-fit, minmax(95px, 1fr));">
         <div class="pm-kpi-card">
           <div class="pm-kpi-val" style="color:var(--accent-green);">+${st.score}</div>
           <div class="pm-kpi-lbl">النقاط ⭐</div>
@@ -3589,15 +4857,21 @@ function renderQuizPostMatchSummary() {
           <div class="pm-kpi-val" style="color:var(--accent-cyan);">${accPct}%</div>
           <div class="pm-kpi-lbl">الدقة (${st.roundCorrect}/${st.roundAnswered})</div>
         </div>
+        <div class="pm-kpi-card" style="border-top-color:#ff9100;">
+          <div class="pm-kpi-val" style="color:#ff9100;">🔥 ${st.bestStreakInRound}</div>
+          <div class="pm-kpi-lbl">أطول سلسلة</div>
+        </div>
         <div class="pm-kpi-card" style="border-top-color:var(--accent-gold);">
-          <div class="pm-kpi-val" style="color:var(--accent-gold);">Lv.${lvlObj.level}</div>
-          <div class="pm-kpi-lbl">المستوى 🎖️</div>
+          <div class="pm-kpi-val" style="color:var(--accent-gold);">⚡ ${st.speedBonusCount}</div>
+          <div class="pm-kpi-lbl">بونص السرعة</div>
         </div>
       </div>
 
+      ${reviewHtml}
+
       <div style="background:#060a14; border:1px dashed var(--accent-gold); border-radius:12px; padding:10px 14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
-        <span style="font-size:0.78rem; color:var(--accent-gold); font-weight:900;">🔗 كود تحدي الصديق: ${st.challengeSeed}</span>
-        <button type="button" class="dock-lifeline-btn" onclick="window.copyChallengeCodeToClipboard('${st.challengeSeed}')" style="border-color:var(--accent-gold); color:var(--accent-gold);">📋 نسخ</button>
+        <span style="font-size:0.78rem; color:var(--accent-gold); font-weight:900;">🔗 كود تحدي الصديق: ${escapeHtml(st.challengeSeed)}</span>
+        <button type="button" class="dock-lifeline-btn" onclick="window.copyChallengeCodeToClipboard('${escapeHtml(st.challengeSeed)}')" style="border-color:var(--accent-gold); color:var(--accent-gold);">📋 نسخ</button>
       </div>
 
       <div style="display:flex; justify-content:center; gap:10px;">
@@ -3610,288 +4884,12 @@ function renderQuizPostMatchSummary() {
 
 
 // =========================================================
-// 13. محرك توافق الجوال والسكرول العرضي الشامل (Mobile UX & Horizontal Scroll Engine)
-// =========================================================
-(function initDeepPitchMobileUX() {
-  function injectMobileMasterStyles() {
-    if (document.getElementById('dp-mobile-master-css')) return;
-    const style = document.createElement('style');
-    style.id = 'dp-mobile-master-css';
-    style.innerHTML = `
-      /* إصلاح تناسق شريط العودة للرئيسية ومنع التصاقه بعنوان الصفحة */
-      .mobile-back-bar {
-        display: flex !important;
-        align-items: center !important;
-        justify-content: space-between !important;
-        gap: 12px !important;
-        padding: 10px 14px !important;
-      }
-      .back-btn {
-        flex-shrink: 0 !important;
-        white-space: nowrap !important;
-        padding: 6px 13px !important;
-        font-size: 0.78rem !important;
-      }
-      .back-bar-title {
-        flex: 1 !important;
-        min-width: 0 !important;
-        text-align: left !important;
-        font-size: 0.84rem !important;
-        white-space: nowrap !important;
-        overflow: hidden !important;
-        text-overflow: ellipsis !important;
-      }
-
-      /* إصلاح خروج أسماء الأندية من الكونتاينر وتفعيل السكرول في الميركاتو */
-      .mercato-chips-group {
-        display: flex !important;
-        flex-wrap: nowrap !important;
-        overflow-x: auto !important;
-        -webkit-overflow-scrolling: touch !important;
-        padding-bottom: 6px !important;
-        gap: 8px !important;
-      }
-      .mercato-region-chip, .mercato-filter-chip {
-        flex: 0 0 auto !important;
-        white-space: nowrap !important;
-      }
-      .transfer-bridge-box {
-        grid-template-columns: minmax(0, 1fr) minmax(80px, 1.05fr) minmax(0, 1fr) !important;
-        overflow: hidden !important;
-      }
-      .t-club-node, .t-arrow-tunnel, .renewal-club-side {
-        min-width: 0 !important;
-        max-width: 100% !important;
-        overflow: hidden !important;
-      }
-      .t-club-name, .t-fee-lbl, .t-deal-type-lbl {
-        max-width: 100% !important;
-        white-space: nowrap !important;
-        overflow: hidden !important;
-        text-overflow: ellipsis !important;
-        display: block !important;
-      }
-
-      /* شريط السكرول العرضي القياسي لجميع الفلاتر والأزرار */
-      /* شريط السكرول العرضي القياسي لجميع الفلاتر والأزرار */
-      .dp-h-scroll-bar {
-        display: flex !important;
-        flex-direction: row !important;
-        flex-wrap: nowrap !important;
-        align-items: center !important;
-        gap: 10px !important;
-        overflow-x: auto !important;
-        overflow-y: hidden !important;
-        -webkit-overflow-scrolling: touch !important;
-        padding-bottom: 6px !important;
-        scrollbar-width: thin !important;
-        scrollbar-color: rgba(0, 230, 118, 0.4) transparent !important;
-      }
-      @media (min-width: 769px) {
-        #smart-tools-bar {
-          justify-content: center !important;
-        }
-      }
-      .dp-h-scroll-bar::-webkit-scrollbar { height: 4px !important; }
-      .dp-h-scroll-bar::-webkit-scrollbar-thumb {
-        background: rgba(0, 230, 118, 0.4) !important;
-        border-radius: 99px !important;
-      }
-      .dp-h-scroll-bar > * {
-        flex: 0 0 auto !important;
-        white-space: nowrap !important;
-        scroll-snap-align: start !important;
-      }
-
-      /* شريط الدوريات في جميع الأقسام */
-      #leagues-bar,
-      #standings-leagues-bar,
-      #sim-leagues-bar,
-      #fdr-leagues-bar,
-      #history-leagues-bar,
-      #radar-leagues-bar,
-      .leagues-bar,
-      .league-tabs {
-        display: flex !important;
-        flex-wrap: nowrap !important;
-        overflow-x: auto !important;
-        justify-content: flex-start !important;
-        gap: 8px !important;
-        padding: 8px 10px !important;
-        -webkit-overflow-scrolling: touch !important;
-        scrollbar-width: none !important;
-      }
-      #leagues-bar::-webkit-scrollbar,
-      .leagues-bar::-webkit-scrollbar { display: none !important; }
-      #leagues-bar > *,
-      .leagues-bar > * {
-        flex: 0 0 auto !important;
-        white-space: nowrap !important;
-      }
-
-      /* تحسينات شاشات الجوال الشخصية */
-      @media (max-width: 768px) {
-        .container {
-          padding: 10px 8px !important;
-        }
-
-        /* الصفحة الرئيسية: عرض البوابات الـ 10 في عمودين متجاورين بدلاً من عمود طويل */
-        .nav-grid,
-        .portal-grid,
-        #main-menu-grid {
-          display: grid !important;
-          grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-          gap: 10px !important;
-        }
-        .nav-card,
-        .portal-card {
-          padding: 12px 10px !important;
-          border-radius: 16px !important;
-        }
-        .nav-card h3,
-        .portal-card h3 {
-          font-size: 0.88rem !important;
-        }
-        .nav-card p,
-        .portal-card p {
-          font-size: 0.68rem !important;
-          line-height: 1.35 !important;
-        }
-
-        /* هيدر الأقسام الفرعية (عنوان القسم + زر العودة للرئيسية في سطر واحد) */
-        .view-header,
-        .section-header-bar {
-          display: flex !important;
-          flex-direction: row !important;
-          justify-content: space-between !important;
-          align-items: center !important;
-          flex-wrap: nowrap !important;
-          padding: 10px 12px !important;
-          gap: 8px !important;
-        }
-        .view-header h2 {
-          font-size: 0.95rem !important;
-          white-space: nowrap !important;
-          overflow: hidden !important;
-          text-overflow: ellipsis !important;
-          margin: 0 !important;
-        }
-
-        /* بطاقتا التبديل في الميركاتو (انتقالات اللاعبين / تجديد العقود) في سكرول أفقي مضغوط */
-        .dp-mercato-tabs-row {
-          display: flex !important;
-          flex-direction: row !important;
-          flex-wrap: nowrap !important;
-          overflow-x: auto !important;
-          gap: 8px !important;
-          padding-bottom: 6px !important;
-        }
-        .dp-mercato-tabs-row > div {
-          flex: 0 0 82% !important;
-          padding: 10px 12px !important;
-        }
-        .dp-mercato-tabs-row p,
-        .dp-mercato-tabs-row small {
-          font-size: 0.66rem !important;
-          white-space: nowrap !important;
-          overflow: hidden !important;
-          text-overflow: ellipsis !important;
-        }
-
-        /* تصغير زر مستشار الفانتازي العائم على الجوال حتى لا يغطي المحتوى */
-        #fantasy-fab,
-        .fantasy-fab,
-        .floating-ai-btn,
-        button[onclick*="Fantasy"],
-        button[onclick*="fantasy"] {
-          padding: 8px 13px !important;
-          font-size: 0.76rem !important;
-          bottom: 12px !important;
-          left: 12px !important;
-          border-radius: 99px !important;
-          box-shadow: 0 4px 14px rgba(0, 210, 255, 0.35) !important;
-        }
-      }
-    `;
-    document.head.appendChild(style);
-  }
-
-  function applyHorizontalScrollUpgrades() {
-    // 1. صفحة مباريات الجولة: شريط (تذكرة الحسم + صحيفة الجولة + تحديث البيانات)
-    const allButtons = Array.from(document.querySelectorAll('button'));
-    const ticketBtn = allButtons.find(b => b.textContent && (b.textContent.includes('تذكرة الحسم') || b.textContent.includes('صحيفة الجولة')));
-    if (ticketBtn && ticketBtn.parentElement) {
-      const actionRow = ticketBtn.parentElement;
-      if (!actionRow.classList.contains('dp-h-scroll-bar')) {
-        actionRow.classList.add('dp-h-scroll-bar');
-      }
-    }
-
-    // 2. صفحة الميركاتو والعقود: تبويبات الانتقالات/العقود + فلاتر القارات + فلاتر نوع الصفقة
-    const worldBtn = allButtons.find(b => b.textContent && b.textContent.includes('كل أندية العالم'));
-    if (worldBtn) {
-      const regionRow = worldBtn.parentElement;
-      if (regionRow) {
-        // إذا كان حقل البحث داخل نفس السطر مع أزرار القارات، نفصله في الأعلى ليأخذ عرضاً كاملاً أنيقاً
-        const searchInput = regionRow.parentElement ? regionRow.parentElement.querySelector('input[type="text"], input[placeholder*="ابحث"]') : null;
-        if (searchInput && searchInput.parentElement === regionRow) {
-          const parentCard = regionRow.parentElement;
-          const searchWrap = document.createElement('div');
-          searchWrap.style.cssText = 'width:100%; margin-bottom:8px;';
-          searchInput.style.cssText += ';width:100% !important; max-width:100% !important; box-sizing:border-box !important;';
-          searchWrap.appendChild(searchInput);
-          parentCard.insertBefore(searchWrap, regionRow);
-        } else if (searchInput && searchInput.parentElement && searchInput.parentElement.parentElement === regionRow.parentElement) {
-          // إذا كان البحث وأزرار القارات في صف واحد متجاور (flex-between) نحولهما لعمود فوق بعض
-          const combinedRow = regionRow.parentElement;
-          combinedRow.style.flexDirection = 'column';
-          combinedRow.style.alignItems = 'stretch';
-          combinedRow.style.gap = '8px';
-          searchInput.style.width = '100%';
-        }
-        regionRow.classList.add('dp-h-scroll-bar');
-      }
-    }
-
-    // شريط نوع وحالة الصفقة (تمت رسمياً، مفاوضات جارية، صفقات فشلت، إشاعات، مدربون)
-    const doneDealBtn = allButtons.find(b => b.textContent && b.textContent.includes('تمت رسمياً') && b.textContent.length < 25);
-    if (doneDealBtn && doneDealBtn.parentElement) {
-      doneDealBtn.parentElement.classList.add('dp-h-scroll-bar');
-    }
-
-    // بطاقتا التبديل العلويتان في الميركاتو (1. انتقالات اللاعبين / 2. تجديد عقود اللاعبين)
-    const allDivs = Array.from(document.querySelectorAll('#mercato-view div, #mercato-container div'));
-    const tab1Div = allDivs.find(d => d.textContent && d.textContent.includes('1. انتقالات اللاعبين') && d.children.length <= 4);
-    if (tab1Div && tab1Div.parentElement) {
-      tab1Div.parentElement.classList.add('dp-mercato-tabs-row');
-    }
-  }
-
-  // تشغيل فوري ومراقبة أي تحديث ديناميكي في الصفحة
-  injectMobileMasterStyles();
-  applyHorizontalScrollUpgrades();
-
-  const observer = new MutationObserver(() => {
-    applyHorizontalScrollUpgrades();
-  });
-
-  if (document.body) {
-    observer.observe(document.body, { childList: true, subtree: true });
-  } else {
-    window.addEventListener('DOMContentLoaded', () => {
-      applyHorizontalScrollUpgrades();
-      observer.observe(document.body, { childList: true, subtree: true });
-    });
-  }
-})();
-
-// =========================================================
-// 14. محرك تطبيق الجوال (PWA + شريط التنقل السفلي + تثبيت أعمدة الجداول + الأندية المفضلة الحية)
+// 13. محرك الجوال الموحّد (PWA + الشريط السفلي المتزامن + الأندية المفضلة الذكية بدون استهلاك البطارية)
 // =========================================================
 (function initDeepPitchMobileSuite() {
   const FAV_STORAGE_KEY = 'deeppitch_favorite_clubs_v1';
   let deferredInstallPrompt = null;
-  let lastKnownScores = {};
+  let onlyFavoritesFilter = false;
 
   function getFavoriteClubs() {
     try {
@@ -3913,6 +4911,23 @@ function renderQuizPostMatchSummary() {
     return getFavoriteClubs().some(c => c.toLowerCase() === clean);
   }
 
+  function showMobileToast(msg) {
+    const old = document.getElementById('dp-mobile-toast');
+    if (old) old.remove();
+    const toast = document.createElement('div');
+    toast.id = 'dp-mobile-toast';
+    toast.style.cssText = `
+      position: fixed; top: 66px; left: 50%; transform: translateX(-50%);
+      background: rgba(13, 22, 40, 0.96); border: 1.5px solid #ffd600;
+      color: #fff; padding: 9px 18px; border-radius: 99px; font-size: 0.8rem;
+      font-weight: 800; z-index: 3000; box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+      white-space: nowrap; max-width: 92vw; overflow: hidden; text-overflow: ellipsis; direction: rtl;
+    `;
+    toast.textContent = msg;
+    document.body.appendChild(toast);
+    setTimeout(() => { if (toast.parentNode) toast.remove(); }, 2500);
+  }
+
   window.toggleFavoriteClub = function(clubName, event) {
     if (event) {
       event.stopPropagation();
@@ -3921,7 +4936,7 @@ function renderQuizPostMatchSummary() {
     const clean = (clubName || '').trim();
     if (!clean || clean.length < 2) return;
 
-    let favs = getFavoriteClubs();
+    const favs = getFavoriteClubs();
     const existsIdx = favs.findIndex(c => c.toLowerCase() === clean.toLowerCase());
     if (existsIdx >= 0) {
       favs.splice(existsIdx, 1);
@@ -3931,157 +4946,17 @@ function renderQuizPostMatchSummary() {
       showMobileToast(`⭐ تمت إضافة (${clean}) إلى أنديتك المفضلة!`);
     }
     saveFavoriteClubs(favs);
-    refreshFavoriteStarsAndSorting();
+    window.refreshFavoriteStarsAndSorting();
   };
 
-  function showMobileToast(msg) {
-    const old = document.getElementById('dp-mobile-toast');
-    if (old) old.remove();
-    const toast = document.createElement('div');
-    toast.id = 'dp-mobile-toast';
-    toast.style.cssText = `
-      position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
-      background: rgba(13, 22, 40, 0.96); border: 1.5px solid #ffd600;
-      color: #fff; padding: 9px 18px; border-radius: 99px; font-size: 0.82rem;
-      font-weight: 800; z-index: 99999; box-shadow: 0 8px 24px rgba(0,0,0,0.6);
-      white-space: nowrap; direction: rtl;
-    `;
-    toast.innerText = msg;
-    document.body.appendChild(toast);
-    setTimeout(() => { if (toast.parentNode) toast.remove(); }, 2500);
-  }
+  window.syncMobileBottomNav = function(activeKey) {
+    const nav = document.getElementById('dp-bottom-nav');
+    if (!nav) return;
+    nav.querySelectorAll('.dp-bnav-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.getAttribute('data-bnav') === activeKey);
+    });
+  };
 
-  // 1. حقن تنسيقات شريط التنقل السفلي + تثبيت أعمدة الجداول + النجوم
-  function injectMobileSuiteCSS() {
-    if (document.getElementById('dp-mobile-suite-css')) return;
-    const css = document.createElement('style');
-    css.id = 'dp-mobile-suite-css';
-    css.innerHTML = `
-      /* زر النجمة للأندية المفضلة */
-      .dp-fav-star-btn {
-        background: transparent !important;
-        border: none !important;
-        cursor: pointer !important;
-        font-size: 1rem !important;
-        line-height: 1 !important;
-        padding: 2px 4px !important;
-        color: #64748b !important;
-        transition: transform 0.18s ease, color 0.18s ease !important;
-        vertical-align: middle !important;
-      }
-      .dp-fav-star-btn.is-fav {
-        color: #ffd600 !important;
-        text-shadow: 0 0 10px rgba(255, 214, 0, 0.5) !important;
-        transform: scale(1.15) !important;
-      }
-
-      /* تمييز بطاقة مباراة الفريق المفضل */
-      .dp-fav-match-card {
-        border: 1.5px solid rgba(255, 214, 0, 0.65) !important;
-        box-shadow: 0 0 18px rgba(255, 214, 0, 0.14) !important;
-        position: relative !important;
-      }
-
-      /* تثبيت العمود الأول (الفريق) عند التمرير الأفقي في الجداول على الجوال */
-      /* تثبيت عمود اسم النادي (العمود الثاني) وتفعيل السكرول العرضي في جميع الجداول */
-      .standings-layout, .data-card {
-        min-width: 0 !important;
-        max-width: 100% !important;
-      }
-      .table-container {
-        width: 100% !important;
-        overflow-x: auto !important;
-        -webkit-overflow-scrolling: touch !important;
-      }
-      @media (max-width: 860px) {
-        .styled-table {
-          min-width: 560px !important;
-          border-collapse: separate !important;
-          border-spacing: 0 !important;
-        }
-        .styled-table th:nth-child(2),
-        .styled-table td:nth-child(2):not([colspan]) {
-          position: sticky !important;
-          right: 0 !important;
-          z-index: 5 !important;
-          background: #0d1526 !important;
-          box-shadow: -5px 0 12px rgba(0, 0, 0, 0.65) !important;
-          border-left: 1px solid #1d2d4d !important;
-        }
-        .styled-table th:nth-child(2) {
-          z-index: 7 !important;
-          background: #090e1c !important;
-        }
-      }
-
-      /* شريط التنقل السفلي الثابت للهاتف (Bottom Navigation Bar) */
-      #dp-bottom-nav {
-        display: none;
-      }
-      @media (max-width: 768px) {
-        body {
-          padding-bottom: 72px !important;
-        }
-        #dp-bottom-nav {
-          display: flex !important;
-          position: fixed !important;
-          bottom: 0 !important;
-          left: 0 !important;
-          right: 0 !important;
-          height: 62px !important;
-          background: rgba(7, 11, 21, 0.96) !important;
-          backdrop-filter: blur(14px) !important;
-          -webkit-backdrop-filter: blur(14px) !important;
-          border-top: 1px solid rgba(0, 230, 118, 0.25) !important;
-          z-index: 9990 !important;
-          justify-content: space-around !important;
-          align-items: center !important;
-          padding: 4px 4px env(safe-area-inset-bottom, 4px) 4px !important;
-          box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.65) !important;
-        }
-        .dp-bnav-btn {
-          flex: 1 1 0 !important;
-          background: transparent !important;
-          border: none !important;
-          color: #94a3b8 !important;
-          display: flex !important;
-          flex-direction: column !important;
-          align-items: center !important;
-          justify-content: center !important;
-          gap: 2px !important;
-          font-size: 0.67rem !important;
-          font-weight: 800 !important;
-          cursor: pointer !important;
-          padding: 4px 2px !important;
-          border-radius: 10px !important;
-          transition: all 0.2s ease !important;
-        }
-        .dp-bnav-btn .bnav-ico {
-          font-size: 1.15rem !important;
-          line-height: 1.1 !important;
-        }
-        .dp-bnav-btn.active {
-          color: #00e676 !important;
-          background: rgba(0, 230, 118, 0.1) !important;
-        }
-
-        /* رفع زر مستشار الفانتازي العائم فوق الشريط السفلي */
-        #fantasy-fab,
-        .fantasy-fab,
-        .floating-ai-btn,
-        button[onclick*="Fantasy"],
-        button[onclick*="fantasy"] {
-          bottom: 72px !important;
-          left: 12px !important;
-          padding: 7px 12px !important;
-          font-size: 0.74rem !important;
-        }
-      }
-    `;
-    document.head.appendChild(css);
-  }
-
-  // 2. بناء شريط التنقل السفلي للجوال وربطه بالبوابات الرئيسية
   function buildMobileBottomNav() {
     if (document.getElementById('dp-bottom-nav')) return;
     const nav = document.createElement('nav');
@@ -4089,16 +4964,16 @@ function renderQuizPostMatchSummary() {
     nav.setAttribute('dir', 'rtl');
 
     const tabs = [
-      { id: 'home', icon: '🏠', label: 'الرئيسية', keywords: [] },
-      { id: 'today', icon: '🔴', label: 'مباشر', keywords: ['مباريات اليوم'] },
-      { id: 'standings', icon: '🏆', label: 'الترتيب', keywords: ['جدول الترتيب'] },
-      { id: 'mercato', icon: '🔄', label: 'الميركاتو', keywords: ['الانتقالات', 'الميركاتو'] },
-      { id: 'quiz', icon: '🎮', label: 'المسابقات', keywords: ['التحدي الكروي', 'المسابقات'] }
+      { id: 'today', label: 'المباريات', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>' },
+      { id: 'competitions', label: 'البطولات', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>' },
+      { id: 'media', label: 'الميركاتو', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/></svg>' },
+      { id: 'explore', label: 'استكشاف', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>' },
+      { id: 'quiz', label: 'التحدي', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="6" width="20" height="12" rx="4"/><line x1="6" y1="12" x2="10" y2="12"/><line x1="8" y1="10" x2="8" y2="14"/></svg>' }
     ];
 
     nav.innerHTML = tabs.map((t, idx) => `
       <button type="button" class="dp-bnav-btn ${idx === 0 ? 'active' : ''}" data-bnav="${t.id}">
-        <span class="bnav-ico">${t.icon}</span>
+        <span class="bnav-ico">${t.svg}</span>
         <span>${t.label}</span>
       </button>
     `).join('');
@@ -4107,36 +4982,12 @@ function renderQuizPostMatchSummary() {
 
     nav.querySelectorAll('.dp-bnav-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        nav.querySelectorAll('.dp-bnav-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        const targetId = btn.getAttribute('data-bnav');
-
-        if (targetId === 'home') {
-          const backBtn = Array.from(document.querySelectorAll('button')).find(b => b.textContent && b.textContent.includes('العودة للرئيسية'));
-          if (backBtn && backBtn.offsetParent !== null) backBtn.click();
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-          return;
-        }
-
-        const tabObj = tabs.find(x => x.id === targetId);
-        if (!tabObj) return;
-
-        // البحث عن بطاقة البوابة المطابقة وتشغيلها
-        // البحث عن بطاقة البوابة المطابقة وتشغيلها مباشرة
-        const portalCards = Array.from(document.querySelectorAll('.hub-card, .nav-card, .portal-card'));
-        const matchedCard = portalCards.find(el => {
-          const txt = el.textContent || '';
-          return tabObj.keywords.some(kw => txt.includes(kw)) && !el.closest('#dp-bottom-nav');
-        });
-        if (matchedCard) {
-          matchedCard.click();
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        }
+        const pillarId = btn.getAttribute('data-bnav');
+        navigateToPillar(pillarId);
       });
     });
   }
 
-  // 3. تسجيل Service Worker وتفعيل زر تثبيت التطبيق (PWA)
   function registerPWAEngine() {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -4146,159 +4997,194 @@ function renderQuizPostMatchSummary() {
       e.preventDefault();
       deferredInstallPrompt = e;
 
-      if (document.getElementById('dp-pwa-install-pill')) return;
-      const headerEl = document.querySelector('header, .hero-header, .container');
-      if (!headerEl) return;
-
-      const installBtn = document.createElement('button');
-      installBtn.id = 'dp-pwa-install-pill';
-      installBtn.type = 'button';
-      installBtn.innerHTML = '📲 تثبيت التطبيق على جوالك';
-      installBtn.style.cssText = `
-        display: inline-flex; align-items: center; gap: 6px; margin: 8px auto 0 auto;
-        background: linear-gradient(90deg, #00e676, #00d2ff); color: #050912;
-        border: none; padding: 7px 16px; border-radius: 99px; font-size: 0.78rem;
-        font-weight: 900; cursor: pointer; box-shadow: 0 4px 15px rgba(0, 230, 118, 0.35);
-      `;
+      const installBtn = document.getElementById('dp-pwa-install-pill');
+      if (!installBtn) return;
+      installBtn.style.display = 'inline-flex';
       installBtn.onclick = async () => {
         if (!deferredInstallPrompt) return;
         deferredInstallPrompt.prompt();
         const choice = await deferredInstallPrompt.userChoice;
-        if (choice && choice.outcome === 'accepted') {
-          installBtn.remove();
-        }
+        if (choice && choice.outcome === 'accepted') installBtn.style.display = 'none';
         deferredInstallPrompt = null;
       };
-      headerEl.insertAdjacentElement('afterbegin', installBtn);
     });
   }
 
-  // 4. إضافة نجوم المفضلة بجانب الأندية وترتيب المباريات المفضلة في الأعلى
-  let onlyFavoritesFilter = false;
 
-  function refreshFavoriteStarsAndSorting() {
+  window.isClubFavoritePublic = isClubFavorite;
+
+  window.refreshFavoriteStarsAndSorting = function() {
     const favs = getFavoriteClubs();
 
-    // أ) إضافة النجمة في صفوف جدول الترتيب
-    document.querySelectorAll('table tbody tr').forEach(tr => {
-      const cells = tr.querySelectorAll('td');
-      if (cells.length < 2) return;
-      const teamCell = cells[0].querySelector('img') ? cells[0] : (cells[1].querySelector('img') ? cells[1] : cells[0]);
-      if (!teamCell) return;
+    // 1. إعادة رسم مباريات اليوم بتجميعها الجديد لتحديث مجموعة المفضلة فوراً
+    if (window.activeSection === 'today' && Array.isArray(window.currentTodayMatches) && typeof renderTodayMatchesGrouped === 'function') {
+      renderTodayMatchesGrouped(window.currentTodayMatches);
+    }
 
-      const rawName = teamCell.textContent.replace(/[☆⭐0-9]/g, '').trim();
+    // 2. نجوم المفضلة في جدول الترتيب الرسمي
+    document.querySelectorAll('#official-standings-tbody tr').forEach(tr => {
+      const cells = tr.querySelectorAll('td');
+      if (cells.length < 3) return;
+      const teamWrap = cells[1].querySelector('div') || cells[1];
+      const nameEl = cells[1].querySelector('.team-title-sm');
+      if (!nameEl) return;
+
+      const rawName = nameEl.textContent.trim();
       if (!rawName || rawName.length < 2) return;
 
-      let starBtn = teamCell.querySelector('.dp-fav-star-btn');
+      let starBtn = teamWrap.querySelector('.dp-fav-star-btn');
       if (!starBtn) {
         starBtn = document.createElement('button');
         starBtn.type = 'button';
         starBtn.className = 'dp-fav-star-btn';
         starBtn.title = 'إضافة إلى أنديتي المفضلة';
         starBtn.onclick = (ev) => window.toggleFavoriteClub(rawName, ev);
-        teamCell.prepend(starBtn);
+        teamWrap.prepend(starBtn);
       }
       const active = isClubFavorite(rawName);
-      starBtn.innerText = active ? '⭐' : '☆';
+      starBtn.textContent = active ? '⭐' : '☆';
       starBtn.classList.toggle('is-fav', active);
     });
 
-    // ب) إضافة النجوم في بطاقات المباريات (مباريات اليوم ومباريات الجولة)
-    const matchCards = Array.from(document.querySelectorAll('.match-card, .fixture-card, [data-match-id]'));
-    if (matchCards.length > 0) {
-      const listParent = matchCards[0].parentElement;
-      if (listParent && !document.getElementById('dp-fav-filter-bar') && favs.length > 0) {
-        const bar = document.createElement('div');
-        bar.id = 'dp-fav-filter-bar';
-        bar.style.cssText = 'display:flex; justify-content:space-between; align-items:center; background:#0b1324; border:1px solid rgba(255,214,0,0.35); padding:7px 12px; border-radius:12px; margin-bottom:10px; font-size:0.78rem;';
-        bar.innerHTML = `
-          <span style="color:#ffd600; font-weight:800;">⭐ أنديتك المفضلة (${favs.length}) مثبتة في الأعلى</span>
-          <button type="button" id="dp-toggle-only-favs" style="background:#13203b; border:1px solid #ffd600; color:#ffd600; padding:4px 10px; border-radius:99px; font-size:0.72rem; font-weight:800; cursor:pointer;">
-            عرض المفضلة فقط
-          </button>
-        `;
-        listParent.parentElement.insertBefore(bar, listParent);
-        document.getElementById('dp-toggle-only-favs').onclick = function() {
-          onlyFavoritesFilter = !onlyFavoritesFilter;
-          this.innerText = onlyFavoritesFilter ? 'عرض جميع المباريات' : 'عرض المفضلة فقط';
-          refreshFavoriteStarsAndSorting();
-        };
+    // 3. تمييز وتثبيت مباريات الأندية المفضلة في مباريات الجولة
+    const listParent = document.getElementById('fixtures-container');
+    if (listParent) {
+      const cards = Array.from(listParent.querySelectorAll('.fixture-card'));
+      const existingBar = document.getElementById('dp-fav-bar-fixtures');
+
+      if (cards.length === 0 || favs.length === 0) {
+        if (existingBar) existingBar.remove();
+        onlyFavoritesFilter = false;
+      } else {
+        let bar = existingBar;
+        if (!bar && listParent.parentElement) {
+          bar = document.createElement('div');
+          bar.id = 'dp-fav-bar-fixtures';
+          bar.style.cssText = 'display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; background:var(--card); border:1px solid rgba(245,158,11,0.35); padding:8px 12px; border-radius:12px; margin-bottom:12px; font-size:0.78rem;';
+          listParent.parentElement.insertBefore(bar, listParent);
+        }
+        if (bar) {
+          bar.innerHTML = `
+            <span style="color:var(--accent-gold-bright); font-weight:800;">⭐ أنديتك المفضلة (${favs.length}) مثبتة في الأعلى</span>
+            <button type="button" class="retry-btn" style="padding:4px 12px; font-size:0.72rem;">
+              ${onlyFavoritesFilter ? 'عرض جميع المباريات' : 'عرض المفضلة فقط'}
+            </button>
+          `;
+          const toggleBtn = bar.querySelector('button');
+          if (toggleBtn) {
+            toggleBtn.onclick = () => {
+              onlyFavoritesFilter = !onlyFavoritesFilter;
+              window.refreshFavoriteStarsAndSorting();
+            };
+          }
+        }
       }
 
-      matchCards.forEach(card => {
-        const teamEls = card.querySelectorAll('.team-name, h4, strong');
+      cards.forEach(card => {
         let cardHasFav = false;
-        teamEls.forEach(el => {
+        card.querySelectorAll('.team-title').forEach(el => {
           const tName = el.textContent.replace(/[☆⭐]/g, '').trim();
-          if (!tName || tName.length < 2 || tName.length > 28 || /\d/.test(tName)) return;
+          if (!tName || tName.length < 2) return;
           if (isClubFavorite(tName)) cardHasFav = true;
 
           let sBtn = el.querySelector('.dp-fav-star-btn');
-          if (!sBtn && (el.classList.contains('team-name') || el.tagName === 'H4')) {
+          if (!sBtn) {
             sBtn = document.createElement('button');
             sBtn.type = 'button';
             sBtn.className = 'dp-fav-star-btn';
             sBtn.onclick = (ev) => window.toggleFavoriteClub(tName, ev);
             el.appendChild(sBtn);
           }
-          if (sBtn) {
-            const act = isClubFavorite(tName);
-            sBtn.innerText = act ? '⭐' : '☆';
-            sBtn.classList.toggle('is-fav', act);
-          }
+          const act = isClubFavorite(tName);
+          sBtn.textContent = act ? '⭐' : '☆';
+          sBtn.classList.toggle('is-fav', act);
         });
 
         card.classList.toggle('dp-fav-match-card', cardHasFav);
-        if (onlyFavoritesFilter) {
-          card.style.display = cardHasFav ? '' : 'none';
-        } else {
-          card.style.display = '';
-        }
-
-        // تنبيه صوتي خفيف عند تغير نتيجة مباراة لفريق مفضل أثناء التصفح
-        const mId = card.getAttribute('data-match-id') || card.id;
-        const scoreTxt = (card.querySelector('.score-box, .match-score') || {}).textContent || '';
-        if (cardHasFav && mId && scoreTxt.includes('-')) {
-          if (lastKnownScores[mId] && lastKnownScores[mId] !== scoreTxt) {
-            showMobileToast(`⚽ جووول! تحديث في مباراة فريقك المفضل (${scoreTxt.trim()})`);
-            if (typeof playQuizSound === 'function') playQuizSound('correct');
-          }
-          lastKnownScores[mId] = scoreTxt;
-        }
+        card.style.display = (onlyFavoritesFilter && favs.length > 0 && !cardHasFav) ? 'none' : '';
       });
 
-      // رفع بطاقات الأندية المفضلة إلى أعلى القائمة تلقائياً
-      if (listParent && favs.length > 0) {
-        const favCards = matchCards.filter(c => c.classList.contains('dp-fav-match-card'));
+      if (favs.length > 0) {
+        const favCards = cards.filter(c => c.classList.contains('dp-fav-match-card'));
         favCards.reverse().forEach(fc => {
-          if (listParent.firstChild !== fc) {
-            listParent.insertBefore(fc, listParent.firstChild);
-          }
+          if (listParent.firstChild !== fc) listParent.insertBefore(fc, listParent.firstChild);
         });
       }
     }
-  }
-
-  injectMobileSuiteCSS();
-  registerPWAEngine();
-
-  let debounceTimer = null;
-  const scheduleEnhance = () => {
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      buildMobileBottomNav();
-      refreshFavoriteStarsAndSorting();
-    }, 220);
   };
 
-  if (document.body) {
-    scheduleEnhance();
-    new MutationObserver(scheduleEnhance).observe(document.body, { childList: true, subtree: true });
-  } else {
-    window.addEventListener('DOMContentLoaded', () => {
-      scheduleEnhance();
-      new MutationObserver(scheduleEnhance).observe(document.body, { childList: true, subtree: true });
+  // إيماءة السحب للأسفل لإغلاق النوافذ السفلية على الجوال (Swipe-to-Dismiss Bottom Sheets)
+  function initMobileBottomSheetGestures() {
+    let startY = 0;
+    let deltaY = 0;
+    let activeSheet = null;
+
+    document.addEventListener('touchstart', (e) => {
+      if (window.innerWidth > 768) return;
+      const sheet = e.target.closest('.modal-content');
+      if (!sheet || sheet.scrollTop > 2) return;
+      activeSheet = sheet;
+      startY = e.touches[0].clientY;
+      deltaY = 0;
+      activeSheet.style.transition = 'none';
+    }, { passive: true });
+
+    document.addEventListener('touchmove', (e) => {
+      if (!activeSheet) return;
+      const diff = e.touches[0].clientY - startY;
+      if (diff > 0) {
+        deltaY = diff;
+        activeSheet.style.transform = `translateY(${Math.min(diff, 260)}px)`;
+      }
+    }, { passive: true });
+
+    document.addEventListener('touchend', () => {
+      if (!activeSheet) return;
+      const sheet = activeSheet;
+      activeSheet = null;
+      sheet.style.transition = 'transform 0.2s ease';
+      if (deltaY > 95) {
+        const overlay = sheet.closest('.modal-overlay');
+        sheet.style.transform = '';
+        if (overlay) {
+          overlay.style.display = 'none';
+          document.body.style.overflow = '';
+        }
+      } else {
+        sheet.style.transform = '';
+      }
     });
-  
+  }
+
+  // مراقب حالة الإنترنت (Offline / Online Graceful Feedback)
+  function initNetworkStatusWatcher() {
+    const showNetBanner = (isOnline) => {
+      let el = document.getElementById('dp-network-banner');
+      if (isOnline) {
+        if (el) el.remove();
+        showMobileToast('تمت استعادة الاتصال بالإنترنت — جاري التحديث...');
+        refreshCurrentView(false);
+        return;
+      }
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'dp-network-banner';
+        el.style.cssText = 'position:fixed;bottom:74px;left:50%;transform:translateX(-50%);background:#7f1d1d;border:1px solid #ef4444;color:#fff;padding:8px 16px;border-radius:99px;font-size:0.78rem;font-weight:800;z-index:3500;box-shadow:0 8px 24px rgba(0,0,0,0.5);white-space:nowrap;';
+        el.textContent = 'انقطع الاتصال بالإنترنت — يتم عرض البيانات المخزنة مؤقتاً';
+        document.body.appendChild(el);
+      }
+    };
+    window.addEventListener('offline', () => showNetBanner(false));
+    window.addEventListener('online', () => showNetBanner(true));
+  }
+
+  registerPWAEngine();
+  initMobileBottomSheetGestures();
+  initNetworkStatusWatcher();
+
+  if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', buildMobileBottomNav);
+  } else {
+    buildMobileBottomNav();
   }
 })();

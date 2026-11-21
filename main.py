@@ -1,12 +1,13 @@
+
 import os
 import time
 import json
 import hashlib
 import threading
 import urllib.request
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
-
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
@@ -21,16 +22,24 @@ from engine_core import (
     generate_h2h_history
 )
 
-app = FastAPI(title="DeepPitch Multi-League Analytics Platform")
+
+@asynccontextmanager
+async def lifespan(app_instance: FastAPI):
+    db.init_db()
+    threading.Thread(target=db.background_warm_all_leagues, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="DeepPitch Multi-League Analytics Platform", lifespan=lifespan)
 
 if os.path.exists("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# تفعيل CORS لضمان عدم حظر أي طلب عبر الشبكات الخارجية
+# تفعيل CORS بشكل متوافق مع معايير المتصفحات الحديثة
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -40,12 +49,19 @@ CACHE_TTL_SECONDS = 1800
 
 TODAYS_MATCHES_CACHE = {"data": None, "time": 0}
 TODAY_CACHE_TTL = 30
+LAST_FORCE_REFRESH_TS = {"news": 0.0, "mercato": 0.0, "cards": 0.0}
+FORCE_REFRESH_COOLDOWN = 60  # السماح بالتحديث الإجباري مرة كل 60 ثانية كحد أقصى
 
 
-@app.on_event("startup")
-def startup_event():
-    db.init_db()
-    threading.Thread(target=db.background_warm_all_leagues, daemon=True).start()
+def can_force_refresh(scope_key: str, requested: bool) -> bool:
+    if not requested:
+        return False
+    now_ts = time.time()
+    last_ts = LAST_FORCE_REFRESH_TS.get(scope_key, 0.0)
+    if (now_ts - last_ts) > FORCE_REFRESH_COOLDOWN:
+        LAST_FORCE_REFRESH_TS[scope_key] = now_ts
+        return True
+    return False
 
 
 @app.get("/")
@@ -80,13 +96,14 @@ def get_leagues():
 
 
 @app.get("/api/gameweek/{league_code}")
-def get_gameweek_predictions(league_code: str):
+def get_gameweek_predictions(league_code: str, refresh: bool = False):
     now = time.time()
     cache_key = f"gw_{league_code}"
-    if cache_key in RESPONSE_CACHE and (now - RESPONSE_CACHE[cache_key]["time"] < CACHE_TTL_SECONDS):
+    allow_refresh = can_force_refresh(cache_key, refresh)
+    if not allow_refresh and cache_key in RESPONSE_CACHE and (now - RESPONSE_CACHE[cache_key]["time"] < CACHE_TTL_SECONDS):
         return RESPONSE_CACHE[cache_key]["payload"]
 
-    fixtures = db.get_gameweek_fixtures(league_code)
+    fixtures = db.get_gameweek_fixtures(league_code, force_refresh=allow_refresh)
     if not fixtures:
         return {"league_code": league_code, "fixtures": []}
 
@@ -123,6 +140,7 @@ def get_gameweek_predictions(league_code: str):
             "fixture_id": f["fixture_id"],
             "gameweek": f["gameweek"],
             "kickoff_time": f["kickoff_time"],
+            "kickoff_iso": f.get("kickoff_iso", ""),
             "status": f["status"],
             "h2h": h2h_data,
             "home": {
@@ -162,18 +180,21 @@ def get_gameweek_predictions(league_code: str):
     return payload
 
 
+
 @app.get("/api/standings/{league_code}")
 @app.get("/api/official_standings/{league_code}")
-def get_official_standings_route(league_code: str):
-    standings = db.get_official_standings(league_code)
+def get_official_standings_route(league_code: str, refresh: bool = False):
+    allow_refresh = can_force_refresh(f"standings_{league_code}", refresh)
+    standings = db.get_official_standings(league_code, force_refresh=allow_refresh)
     return {"status": "success", "standings": standings}
 
 
 @app.get("/api/scorers/{league_code}")
 @app.get("/api/top_scorers/{league_code}")
-def get_top_scorers_route(league_code: str):
-    scorers = db.get_top_scorers(league_code)
-    return {"status": "success", "scorers": scorers}
+def get_top_scorers_route(league_code: str, refresh: bool = False):
+    allow_refresh = can_force_refresh(f"scorers_{league_code}", refresh)
+    scorers = db.get_top_scorers(league_code, force_refresh=allow_refresh)
+    return {"status": "success", "scorers": scorers} 
 
 
 @app.get("/api/safe_accumulator/{league_code}")
@@ -282,20 +303,22 @@ def get_match_stats_route(league_code: str, match_id: str):
 @app.get("/api/news")
 def get_sports_news_route(refresh: bool = False):
     try:
-        articles = db.sync_and_get_news(force_refresh=refresh)
+        now_ts = time.time()
+        allow_refresh = False
+        if refresh and (now_ts - LAST_FORCE_REFRESH_TS["news"] > FORCE_REFRESH_COOLDOWN):
+            allow_refresh = True
+            LAST_FORCE_REFRESH_TS["news"] = now_ts
+
+        articles = db.sync_and_get_news(force_refresh=allow_refresh)
         return {"status": "success", "count": len(articles), "news": articles}
     except Exception as e:
         return {"status": "error", "news": [], "message": str(e)}
 
 
 @app.get("/api/season_projections/{league_code}")
-def get_season_projections_route(league_code: str):
-    return {"projections": db.get_season_projections(league_code)}
-
-
-@app.get("/api/fdr/{league_code}")
-def get_fdr_route(league_code: str):
-    return {"fdr": db.get_league_fdr(league_code)}
+def get_season_projections_route(league_code: str, refresh: bool = False):
+    allow_refresh = can_force_refresh(f"proj_{league_code}", refresh)
+    return {"projections": db.get_season_projections(league_code, force_refresh=allow_refresh)}
 
 
 # =========================================================================
@@ -383,9 +406,6 @@ def query_ai_scout(req: ScoutQueryRequest):
         scorers_raw = getattr(db, "get_top_scorers", lambda c: [])(code)
         scorers = scorers_raw.get("scorers", []) if isinstance(scorers_raw, dict) else (scorers_raw or [])
 
-        fdr_raw = getattr(db, "get_league_fdr", lambda c: [])(code)
-        fdr_list = fdr_raw.get("fdr", []) if isinstance(fdr_raw, dict) else (fdr_raw or [])
-
         top_scorers_texts = []
         for s in scorers[:3]:
             if isinstance(s, dict):
@@ -395,21 +415,19 @@ def query_ai_scout(req: ScoutQueryRequest):
                 top_scorers_texts.append(f"{s_name} ({s_team} - {s_goals} أهداف)")
         top_3_scorers = ", ".join(top_scorers_texts) if top_scorers_texts else "متصدري الترتيب"
 
-        easiest_texts = []
-        for t in fdr_list[:3]:
-            if isinstance(t, dict):
-                t_name = t.get("name", t.get("short_name", "نادي"))
-                t_diff = t.get("avg_difficulty", 2.4)
-                easiest_texts.append(f"{t_name} (معدل {t_diff})")
-        easiest_fdr = ", ".join(easiest_texts) if easiest_texts else "الفرق المتقدمة"
+        valid_st = [t for t in standings if isinstance(t, dict) and t.get("played", 0) > 0]
+        by_attack = sorted(valid_st, key=lambda x: x.get("gf", 0) / max(1, x.get("played", 1)), reverse=True)
+        by_weak_def = sorted(valid_st, key=lambda x: x.get("ga", 0) / max(1, x.get("played", 1)), reverse=True)
 
-        hardest_texts = []
-        for t in (fdr_list[-3:] if len(fdr_list) >= 3 else []):
-            if isinstance(t, dict):
-                t_name = t.get("name", t.get("short_name", "نادي"))
-                t_diff = t.get("avg_difficulty", 3.8)
-                hardest_texts.append(f"{t_name} (معدل {t_diff})")
-        hardest_fdr = ", ".join(hardest_texts) if hardest_texts else "أندية الوسط"
+        easiest_fdr = ", ".join([
+            f"{t.get('short_name', 'نادي')} ({t.get('gf', 0)} هدفاً)"
+            for t in by_attack[:3]
+        ]) if by_attack else "الفرق المتقدمة"
+
+        hardest_fdr = ", ".join([
+            f"{t.get('short_name', 'نادي')} (استقبل {t.get('ga', 0)} هدفاً)"
+            for t in by_weak_def[:3]
+        ]) if by_weak_def else "أندية المؤخرة"
 
         league_info = getattr(db, "LEAGUE_CODES", {}).get(code, {})
         league_name = league_info.get("name", "الدوري")
@@ -449,9 +467,7 @@ def query_ai_scout(req: ScoutQueryRequest):
 
     except Exception as e:
         print(f"❌ استثناء في السكاوت: {e}")
-        return {"reply": "🤖 مرحباً بك! بناءً على أرقام الجولة الحالية، يُنصح دائماً بمتابعة جدول FDR واختيار عناصر الأندية ذات مؤشر الصعوبة الأقل (1 و 2)."}
-
-
+        return {"reply": "🤖 مرحباً بك! بناءً على أرقام الجولة الحالية، يُنصح باختيار عناصر الأندية الأعلى تهديفاً ومراقبة رادار التعثر في صفحة مباريات الجولة."}
 # =========================================================================
 # مسار صحيفة الجولة الذكية (AI Matchweek Gazette API)
 # =========================================================================
@@ -560,9 +576,10 @@ def get_match_events_route(league_code: str, match_id: str):
 # مسار أرشيف وتاريخ الدوريات (مربوط بقاعدة البيانات الرسمية و ESPN)
 # =========================================================================
 @app.get("/api/league_history/{league_code}")
-def get_league_history_route(league_code: str):
+def get_league_history_route(league_code: str, refresh: bool = False):
     try:
-        data = db.get_league_full_history(league_code.upper())
+        allow_refresh = can_force_refresh(f"hist_{league_code.upper()}", refresh)
+        data = db.get_league_full_history(league_code.upper(), force_refresh=allow_refresh)
         if data:
             return {"status": "success", "data": data}
         return {"status": "error", "message": "تعذر العثور على بيانات الدوري"}
@@ -720,7 +737,13 @@ def get_match_momentum_route(league_code: str, match_id: str):
 @app.get("/api/mercato")
 def get_mercato_and_contracts_route(refresh: bool = False):
     try:
-        data = db.get_mercato_and_contracts_data(force_refresh=refresh)
+        now_ts = time.time()
+        allow_refresh = False
+        if refresh and (now_ts - LAST_FORCE_REFRESH_TS["mercato"] > FORCE_REFRESH_COOLDOWN):
+            allow_refresh = True
+            LAST_FORCE_REFRESH_TS["mercato"] = now_ts
+
+        data = db.get_mercato_and_contracts_data(force_refresh=allow_refresh)
         return {
             "status": "success",
             "transfers": data.get("transfers", []),
@@ -756,14 +779,16 @@ def get_quiz_arena_bank_route(
         )
         return {
             "status": "success",
-            "total_pool_size": data.get("total_pool_size", 2800),
+            "total_pool_size": data.get("total_pool_size", 0),
+            "matched_count": data.get("matched_count", 0),
+            "fallback_used": data.get("fallback_used", False),
+            "ai_available": data.get("ai_available", False),
             "category_counts": data.get("category_counts", {}),
             "questions": data.get("questions", []),
             "seed_code": data.get("seed_code", "")
         }
     except Exception as e:
         return {"status": "error", "questions": [], "message": str(e)}
-
 
 # =========================================================================
 # مسارات غرفة المحللين الأذكياء (AI Pundit Studio API)
@@ -799,5 +824,77 @@ def ask_studio_pundit_route(req: StudioAskRequest):
             question=req.question
         )
         return {"status": "success", "data": res}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+    # =========================================================================
+# مسارات مركز بطاقات الأندية والمنتخبات واللاعبين (Cards Hub API)
+# =========================================================================
+
+# =========================================================================
+# مسارات مركز بطاقات المنتخبات والأندية ولاعبي فيفا (Cards Hub API)
+# =========================================================================
+
+@app.get("/api/cards_hub")
+def get_cards_hub_route(
+    sub_type: str = "nations",
+    league: str = "PL",
+    team_id: str = "",
+    team_name: str = "",
+    query: str = "",
+    refresh: bool = False
+):
+    try:
+        st = (sub_type or "nations").lower()
+        lg = (league or "PL").upper()
+
+        now_ts = time.time()
+        allow_refresh = False
+        if refresh and (now_ts - LAST_FORCE_REFRESH_TS["cards"] > FORCE_REFRESH_COOLDOWN):
+            allow_refresh = True
+            LAST_FORCE_REFRESH_TS["cards"] = now_ts
+
+        if st == "nations":
+            items = db.get_live_top_100_nations_cards(force_refresh=allow_refresh)
+        elif st == "clubs":
+            items = db.get_live_clubs_cards(league_code=lg, force_refresh=allow_refresh)
+        elif st == "squad":
+            items = db.get_live_club_squad_fifa_cards(
+                league_code=lg,
+                team_id=team_id,
+                team_name=team_name,
+                force_refresh=allow_refresh
+            )
+        else:
+            if team_id:
+                items = db.get_live_club_squad_fifa_cards(
+                    league_code=lg,
+                    team_id=team_id,
+                    team_name=team_name,
+                    force_refresh=allow_refresh
+                )
+            else:
+                items = db.get_live_players_cards(
+                    league_code=lg,
+                    search_query=query,
+                    force_refresh=allow_refresh
+                )
+
+        return {"status": "success", "sub_type": st, "items": items}
+    except Exception as e:
+        return {"status": "error", "items": [], "message": str(e)}
+@app.get("/api/card_profile_detail")
+def get_card_profile_detail_route(
+    entity_type: str = "club",
+    name: str = "",
+    extra: str = ""
+):
+    try:
+        profile = db.get_live_entity_card_detail(
+            entity_type=entity_type,
+            name=name,
+            extra=extra
+        )
+        return {"status": "success", "profile": profile}
     except Exception as e:
         return {"status": "error", "message": str(e)}

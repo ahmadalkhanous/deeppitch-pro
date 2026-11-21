@@ -305,7 +305,7 @@ def generate_h2h_history(home_short: str, away_short: str, home_elo: float, away
             a_wins = 6 - h_wins
     draws = max(0, 6 - (h_wins + a_wins))
 
-    years = ["2025/26", "2024/25", "2024/25", "2023/24", "2023/24", "2022/23"]
+    years = ["محاكاة 1", "محاكاة 2", "محاكاة 3", "محاكاة 4", "محاكاة 5", "محاكاة 6"]
     outcomes = (["W"] * h_wins) + (["D"] * draws) + (["L"] * a_wins)
 
     state = seed
@@ -337,13 +337,13 @@ def generate_h2h_history(home_short: str, away_short: str, home_elo: float, away
     avg_goals = round(total_goals / max(1, len(recent_matches)), 1)
 
     if h_wins >= 4:
-        streak_text = f"تفوق مباشر لـ {home_short}: فاز في {h_wins} من آخر 6 مواجهات."
+        streak_text = f"تقدير إحصائي (Elo): تفوق متوقع لـ {home_short} في {h_wins} من أصل 6 مواجهات افتراضية."
     elif a_wins >= 4:
-        streak_text = f"عقدة تاريخية لصالح {away_short}: فاز في {a_wins} من آخر 6 لقاءات."
+        streak_text = f"تقدير إحصائي (Elo): أفضلية واضحة لـ {away_short} في {a_wins} من أصل 6 مواجهات افتراضية."
     elif draws >= 3:
-        streak_text = "ندية عالية: التعادل حسم نصف المواجهات المباشرة الأخيرة."
+        streak_text = "تقدير إحصائي (Elo): تقارب كبير يرجّح التعادل في نصف المواجهات الافتراضية."
     else:
-        streak_text = f"تكافؤ في السجل الأخير ({h_wins} فوز لـ {home_short} مقابل {a_wins} لـ {away_short})."
+        streak_text = f"تقدير إحصائي (Elo): تكافؤ رقمي ({h_wins} لصالح {home_short} مقابل {a_wins} لـ {away_short})."
 
     return {
         "home_wins": h_wins,

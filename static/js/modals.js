@@ -7,6 +7,17 @@ window.activeMatchModalData = null;
 window.activeMatchStatsData = null;
 window.currentMatchEventsCache = [];
 
+window._matchModalToken = 0;
+
+function escHtml(str) {
+  return String(str !== undefined && str !== null ? str : '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 var ESPN_LEAGUE_MAP = {
   'PL': 'eng.1', 'PD': 'esp.1', 'BL1': 'ger.1', 'SA': 'ita.1',
   'FL1': 'fra.1', 'DED': 'ned.1', 'PPL': 'por.1', 'TSL': 'tur.1',
@@ -43,28 +54,37 @@ window.closeModal = function(modalId) {
 // =========================================================
 // 1. نظام التبديل الموحد بين تبويبات المباراة الأربعة
 // =========================================================
+// =========================================================
+// 1. نظام التبديل الموحد بين تبويبات المباراة الخمسة (بإحياء الزخم والتسديدات)
+// =========================================================
 window.switchMatchTab = function(tab) {
   var statsWrapper = document.getElementById('tm-stats-wrapper') || document.getElementById('tm-stats-card');
+  var waveTab = document.getElementById('tm-wave-tab');
   var momentumTab = document.getElementById('tm-momentum-tab');
   var eventsTab = document.getElementById('tm-events-tab');
   var lineupTab = document.getElementById('tm-lineup-tab');
 
   var btnStats = document.getElementById('btn-tab-stats');
+  var btnWave = document.getElementById('btn-tab-wave');
   var btnMomentum = document.getElementById('btn-tab-momentum');
   var btnEvents = document.getElementById('btn-tab-events');
   var btnLineup = document.getElementById('btn-tab-lineup');
 
   if (statsWrapper) statsWrapper.style.display = (tab === 'stats') ? 'block' : 'none';
+  if (waveTab) waveTab.style.display = (tab === 'wave') ? 'block' : 'none';
   if (momentumTab) momentumTab.style.display = (tab === 'momentum') ? 'block' : 'none';
   if (eventsTab) eventsTab.style.display = (tab === 'events') ? 'block' : 'none';
   if (lineupTab) lineupTab.style.display = (tab === 'lineup') ? 'block' : 'none';
 
   if (btnStats) btnStats.classList.toggle('active', tab === 'stats');
+  if (btnWave) btnWave.classList.toggle('active', tab === 'wave');
   if (btnMomentum) btnMomentum.classList.toggle('active', tab === 'momentum');
   if (btnEvents) btnEvents.classList.toggle('active', tab === 'events');
   if (btnLineup) btnLineup.classList.toggle('active', tab === 'lineup');
 
-  if (tab === 'momentum') {
+  if (tab === 'wave') {
+    loadMatchMomentumWave();
+  } else if (tab === 'momentum') {
     loadMatchMomentum();
   } else if (tab === 'events') {
     loadMatchEvents();
@@ -72,6 +92,48 @@ window.switchMatchTab = function(tab) {
     loadMatchLineup();
   }
 };
+
+async function loadMatchMomentumWave() {
+  var container = document.getElementById('tm-wave-content');
+  var m = window.activeMatchModalData;
+  if (!container || !m) return;
+  var reqToken = window._matchModalToken;
+
+  container.innerHTML = '<div class="loading-state" style="padding:28px 0;">جاري رسم منحنى الزخم الهجومي وخريطة التسديدات...</div>';
+
+  try {
+    var res = await fetch('/api/match_momentum/' + encodeURIComponent(m.league_code || 'PL') + '/' + encodeURIComponent(m.id));
+    var json = await res.json();
+    if (reqToken !== window._matchModalToken) return;
+    var payload = json && json.data ? json.data : null;
+
+    if (!payload || !payload.has_momentum) {
+      container.innerHTML =
+        '<div class="dp-empty-state" style="padding:28px 16px;">' +
+          '<div style="color:var(--accent-gold-bright); font-weight:800;">' + escHtml((payload && payload.message) || 'سيتوفر منحنى الزخم وخريطة التسديدات فور انطلاق المباراة.') + '</div>' +
+        '</div>';
+      return;
+    }
+
+    if (typeof renderMomentumWidgetHtml === 'function') {
+      container.innerHTML = renderMomentumWidgetHtml('tm-live-mom', payload);
+    }
+  } catch (e) {
+    container.innerHTML = '<div class="loading-state" style="color:var(--accent-red);">تعذر تحميل منحنى الزخم حالياً.</div>';
+  }
+}
+
+// إغلاق النوافذ المنبثقة بزر Escape على سطح المكتب
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.modal-overlay').forEach(function(el) {
+      if (el.style.display === 'flex') {
+        el.style.display = 'none';
+        document.body.style.overflow = '';
+      }
+    });
+  }
+});
 
 // =========================================================
 // 2. محرك غرفة المحللين الأذكياء (AI Pundit Studio - Pre / Live / Post-Match)
@@ -87,6 +149,7 @@ async function loadMatchMomentum(requestedPhase) {
   var container = document.getElementById('tm-momentum-content');
   var m = window.activeMatchModalData;
   if (!container || !m) return;
+  var reqToken = window._matchModalToken;
 
   var phaseToLoad = requestedPhase || 'auto';
 
@@ -101,6 +164,7 @@ async function loadMatchMomentum(requestedPhase) {
     var leagueCode = m.league_code || 'PL';
     var res = await fetch('/api/ai_studio/' + encodeURIComponent(leagueCode) + '/' + encodeURIComponent(m.id) + '?phase=' + encodeURIComponent(phaseToLoad));
     var resJson = await res.json();
+    if (reqToken !== window._matchModalToken) return;
     var studio = (resJson && resJson.data) ? resJson.data : null;
 
     if (!studio) {
@@ -265,10 +329,11 @@ window.submitStudioPunditQuestion = async function() {
       })
     });
     var json = await res.json();
-    if (json && json.status === 'success' && json.data) {
+   if (json && json.status === 'success' && json.data) {
       replyBox.innerHTML =
-        '<div style="font-weight:900; color:var(--accent-green); margin-bottom:4px;">🎙️ ' + json.data.pundit_name + ' (' + json.data.pundit_role + '):</div>' +
-        '<div>' + String(json.data.reply || '').replace(/\*\*(.*?)\*\*/g, '<strong style="color:#fff;">$1</strong>') + '</div>';
+        '<div style="font-weight:900; color:var(--accent-green); margin-bottom:4px;">🎙️ ' + escHtml(json.data.pundit_name) + ' (' + escHtml(json.data.pundit_role) + '):</div>' +
+        '<div>' + escHtml(json.data.reply || '').replace(/\*\*(.*?)\*\*/g, '<strong style="color:#fff;">$1</strong>') + '</div>';
+      inp.value = '';
     } else {
       throw new Error('Fallback');
     }
@@ -554,6 +619,7 @@ async function loadMatchLineup() {
   var container = document.getElementById('tm-lineup-content');
   var m = window.activeMatchModalData;
   if (!container || !m) return;
+  var reqToken = window._matchModalToken;
 
   container.innerHTML = '<div class="loading-state" style="padding:30px 0;">جاري جلب التشكيلة وأرقام اللاعبين من المصدر...</div>';
 
@@ -579,6 +645,7 @@ async function loadMatchLineup() {
     } catch (e) {}
   }
 
+  if (reqToken !== window._matchModalToken) return;
   if (!data || !data.has_lineups) {
     container.innerHTML = '<div style="background:#0c121e; border:1px dashed var(--card-border); border-radius:12px; padding:25px 15px; text-align:center; color:var(--accent-gold); font-size:0.85rem;">' +
       '⏳ لم تُعلن التشكيلة الرسمية للمباراة من المصدر حتى هذه اللحظة.' +
@@ -639,7 +706,7 @@ async function loadMatchLineup() {
 
     var renderRow = function(playersRow) {
       if (!playersRow || playersRow.length === 0) return '';
-      return '<div style="display:flex; justify-content:space-around; align-items:flex-start; margin:12px 0; direction:ltr;">' +
+      return '<div style="display:flex; justify-content:space-around; align-items:flex-start; gap:4px; margin:10px 0; direction:ltr; width:100%;">' +
         playersRow.map(function(p) {
           var ratingHtml = '';
           if (showRatings && p.rating !== null && p.rating !== undefined) {
@@ -647,22 +714,22 @@ async function loadMatchLineup() {
             var rBg = rNum >= 7.3 ? '#00e676' : (rNum >= 6.4 ? '#ffd600' : '#ff5252');
             var rTxtCol = rNum < 6.4 ? '#fff' : '#000';
             ratingHtml =
-              '<div style="background:' + rBg + '; color:' + rTxtCol + '; font-weight:900; font-size:0.68rem; padding:1px 7px; border-radius:6px; margin-bottom:3px; z-index:2; box-shadow:0 2px 5px rgba(0,0,0,0.6);">' +
+              '<div style="background:' + rBg + '; color:' + rTxtCol + '; font-weight:900; font-size:0.64rem; padding:1px 6px; border-radius:6px; margin-bottom:3px; z-index:2; box-shadow:0 2px 5px rgba(0,0,0,0.6);">' +
                 rNum.toFixed(1) +
               '</div>';
           }
 
-          var goalBadge = p.has_goal ? '<span style="position:absolute; top:-5px; right:-6px; font-size:0.75rem;">⚽</span>' : '';
+          var goalBadge = p.has_goal ? '<span style="position:absolute; top:-5px; right:-6px; font-size:0.72rem;">⚽</span>' : '';
           var circleBg = isHome ? '#1e293b' : '#0f172a';
           var borderCol = isHome ? 'var(--accent-green)' : 'var(--accent-cyan)';
 
-          return '<div style="display:flex; flex-direction:column; align-items:center; width:82px; position:relative;">' +
+          return '<div style="display:flex; flex-direction:column; align-items:center; flex:1 1 0; min-width:0; max-width:78px; position:relative;">' +
             ratingHtml +
-            '<div style="width:34px; height:34px; border-radius:50%; background:' + circleBg + '; border:2px solid ' + borderCol + '; display:flex; align-items:center; justify-content:center; font-weight:900; font-size:0.78rem; color:#fff; position:relative; margin-bottom:4px; box-shadow:0 3px 8px rgba(0,0,0,0.45);">' +
-              p.number + goalBadge +
+            '<div style="width:30px; height:30px; border-radius:50%; background:' + circleBg + '; border:2px solid ' + borderCol + '; display:flex; align-items:center; justify-content:center; font-weight:900; font-size:0.74rem; color:#fff; position:relative; margin-bottom:4px; box-shadow:0 3px 8px rgba(0,0,0,0.45);">' +
+              escHtml(p.number) + goalBadge +
             '</div>' +
-            '<div dir="ltr" style="font-size:0.72rem; font-weight:800; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:80px; background:rgba(8,12,21,0.9); border:1px solid rgba(255,255,255,0.14); border-radius:5px; padding:2px 6px; text-align:center;">' +
-              p.name +
+            '<div dir="ltr" style="font-size:0.66rem; font-weight:800; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width:100%; background:rgba(8,12,21,0.9); border:1px solid rgba(255,255,255,0.14); border-radius:5px; padding:2px 4px; text-align:center;">' +
+              escHtml(p.name) +
             '</div>' +
           '</div>';
         }).join('') +
@@ -850,6 +917,7 @@ window.openTodayMatchModal = async function(idx) {
     var m = matches[idx];
     if (!m) return;
 
+   var modalToken = ++window._matchModalToken;
     window.activeMatchModalData = m;
     window.activeMatchStatsData = null;
     window.switchMatchTab('stats');
@@ -880,9 +948,11 @@ window.openTodayMatchModal = async function(idx) {
     togglePreMatchStatsNotice(false, m.kickoff_time);
     renderStatsIntoModal(m.stats || fallbackStats, fallbackStats);
 
-    var res = await fetch('/api/match_stats/' + (m.league_code || 'PL') + '/' + m.id);
+   var res = await fetch('/api/match_stats/' + (m.league_code || 'PL') + '/' + m.id);
+    if (modalToken !== window._matchModalToken) return;
     if (res.ok) {
       var json = await res.json();
+      if (modalToken !== window._matchModalToken) return;
       var statsPayload = (json && json.data) ? json.data : json;
       if (statsPayload && statsPayload.state === 'pre' && !m.is_live) {
         togglePreMatchStatsNotice(true, m.kickoff_time);
@@ -1045,9 +1115,10 @@ window.recalculateSandbox = function() {
     }
   }
 
-  var pH = Math.round(pHomeRaw * 100);
+ var pH = Math.round(pHomeRaw * 100);
   var pD = Math.round(pDrawRaw * 100);
-  var pA = Math.max(1, 100 - (pH + pD));
+  if (pH + pD > 100) pD = 100 - pH;
+  var pA = Math.max(0, 100 - (pH + pD));
 
   // استخراج النتيجة الأكثر اتساقاً مع الكفة الراجحة
   var bestH = 1, bestA = 1, maxCell = -1;
@@ -1142,7 +1213,7 @@ window.askAiPundit = async function() {
 
     if (res.ok) {
       var data = await res.json();
-      var txt = data.analysis || 'تشير مؤشرات الأداء إلى تكافؤ نسبي مع أفضلية طفيفة للمضيف.';
+      var txt = escHtml(data.analysis || 'تشير مؤشرات الأداء إلى تكافؤ نسبي مع أفضلية طفيفة للمضيف.');
       box.innerHTML = txt.replace(/\*\*(.*?)\*\*/g, '<strong style="color:#fff;">$1</strong>');
     } else {
       throw new Error('Fallback');
@@ -1169,16 +1240,15 @@ window.openNewspaperModal = async function() {
     try {
       var league = (typeof activeLeague !== 'undefined' && activeLeague) ? activeLeague : 'PL';
       var res = await fetch('/api/ai_newspaper/' + league);
-      if (!res.ok) res = await fetch('/api/gazette/' + league);
       var data = await res.json();
 
-      var rawContent = data.content || '';
+      var rawContent = escHtml(data.content || '');
       var formattedContent = rawContent
         .replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--accent-gold);">$1</strong>')
         .replace(/\n/g, '<br>');
 
       body.innerHTML =
-        (data.headline ? '<h3 style="color:var(--accent-gold); font-size:1.15rem; margin-bottom:12px; border-bottom:1px solid var(--card-border); padding-bottom:8px;">' + data.headline + '</h3>' : '') +
+        (data.headline ? '<h3 style="color:var(--accent-gold); font-size:1.15rem; margin-bottom:12px; border-bottom:1px solid var(--card-border); padding-bottom:8px;">' + escHtml(data.headline) + '</h3>' : '') +
         '<div style="line-height:1.8; font-size:0.9rem; color:#e2e8f0;">' + formattedContent + '</div>';
     } catch (e) {
       body.innerHTML = '<div style="color:var(--accent-red); text-align:center;">تعذر جلب الصحيفة حالياً.</div>';
@@ -1486,6 +1556,7 @@ async function loadMatchEvents() {
   var container = document.getElementById('tm-events-content');
   var m = window.activeMatchModalData;
   if (!container || !m) return;
+  var reqToken = window._matchModalToken;
 
   if (m.state === 'pre') {
     container.innerHTML = '<div style="background:#0c121e; border:1px dashed var(--card-border); border-radius:12px; padding:25px 15px; text-align:center; color:var(--accent-gold); font-size:0.85rem;">' +
@@ -1513,6 +1584,7 @@ async function loadMatchEvents() {
     } catch (e) {}
   }
 
+  if (reqToken !== window._matchModalToken) return;
   window.currentMatchEventsCache = events;
 
   var filterBarHtml =
