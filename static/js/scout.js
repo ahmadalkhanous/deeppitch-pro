@@ -4,11 +4,19 @@
 
 function toggleScoutWidget() {
   const drawer = document.getElementById('scout-chat-drawer');
+  const topBtn = document.getElementById('dp-scout-topbar-btn');
   if (!drawer) return;
   const isShown = drawer.style.display === 'flex';
   drawer.style.display = isShown ? 'none' : 'flex';
+  if (topBtn) topBtn.classList.toggle('is-active', !isShown);
 
-  if (!isShown) {
+ if (!isShown) {
+    const lgSel = document.getElementById('scout-league-select');
+    if (lgSel && typeof activeLeague !== 'undefined' && activeLeague) {
+      if (Array.from(lgSel.options).some(o => o.value === activeLeague)) {
+        lgSel.value = activeLeague;
+      }
+    }
     const input = document.getElementById('scout-input-field');
     if (input) setTimeout(() => input.focus(), 100);
   }
@@ -56,7 +64,8 @@ async function executeScoutQuery(userText) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: userText,
-        league_code: (typeof activeLeague !== 'undefined' && activeLeague) ? activeLeague : 'PL'
+        league_code: (document.getElementById('scout-league-select') && document.getElementById('scout-league-select').value)
+          || ((typeof activeLeague !== 'undefined' && activeLeague) ? activeLeague : 'PL')
       })
     });
 

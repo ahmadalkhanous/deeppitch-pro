@@ -32,6 +32,14 @@ async def lifespan(app_instance: FastAPI):
 
 app = FastAPI(title="DeepPitch Multi-League Analytics Platform", lifespan=lifespan)
 
+@app.get("/static/manifest.json")
+def manifest_file():
+    if os.path.exists("manifest.json"):
+        return FileResponse("manifest.json", media_type="application/json")
+    if os.path.exists("static/manifest.json"):
+        return FileResponse("static/manifest.json", media_type="application/json")
+    return Response(content="{}", media_type="application/json")
+
 if os.path.exists("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -47,7 +55,7 @@ app.add_middleware(
 RESPONSE_CACHE = {}
 CACHE_TTL_SECONDS = 1800
 
-TODAYS_MATCHES_CACHE = {"data": None, "time": 0}
+TODAYS_MATCHES_CACHE = {}
 TODAY_CACHE_TTL = 30
 LAST_FORCE_REFRESH_TS = {"news": 0.0, "mercato": 0.0, "cards": 0.0}
 FORCE_REFRESH_COOLDOWN = 60  # السماح بالتحديث الإجباري مرة كل 60 ثانية كحد أقصى
@@ -81,13 +89,7 @@ def serve_service_worker():
     )
 
 
-@app.get("/static/manifest.json")
-def manifest_file():
-    if os.path.exists("manifest.json"):
-        return FileResponse("manifest.json", media_type="application/json")
-    if os.path.exists("static/manifest.json"):
-        return FileResponse("static/manifest.json", media_type="application/json")
-    return Response(content="{}", media_type="application/json")
+
 
 
 @app.get("/api/leagues")
@@ -252,14 +254,17 @@ def get_safe_accumulator(league_code: str):
 
 @app.get("/api/today_matches")
 @app.get("/api/todays_matches")
-def get_todays_matches():
+def get_todays_matches(date: str = ""):
     now_ts = time.time()
+    date_key = (date or "today").strip()[:10]
+    ttl = TODAY_CACHE_TTL if date_key == "today" else 300
 
-    if TODAYS_MATCHES_CACHE["data"] and (now_ts - TODAYS_MATCHES_CACHE["time"] < TODAY_CACHE_TTL):
-        return TODAYS_MATCHES_CACHE["data"]
+    cached_entry = TODAYS_MATCHES_CACHE.get(date_key)
+    if cached_entry and (now_ts - cached_entry["time"] < ttl):
+        return cached_entry["data"]
 
     try:
-        raw_matches = db.get_todays_matches()
+        raw_matches = db.get_todays_matches(target_date="" if date_key == "today" else date_key)
         if not raw_matches or not isinstance(raw_matches, list):
             raw_matches = []
     except Exception as e:
@@ -269,19 +274,20 @@ def get_todays_matches():
     def sort_priority(match):
         if not isinstance(match, dict):
             return 3
-        if match.get('is_live') or match.get('state') == 'in':
+        if match.get("is_live") or match.get("state") == "in":
             return 0
-        if match.get('state') == 'pre':
+        if match.get("state") == "pre":
             return 1
         return 2
 
     raw_matches.sort(key=sort_priority)
 
-    payload = {"status": "success", "matches": raw_matches}
-    TODAYS_MATCHES_CACHE["data"] = payload
-    TODAYS_MATCHES_CACHE["time"] = now_ts
+    payload = {"status": "success", "date": date_key, "matches": raw_matches}
+    TODAYS_MATCHES_CACHE[date_key] = {"data": payload, "time": now_ts}
+    if len(TODAYS_MATCHES_CACHE) > 20:
+        oldest = min(TODAYS_MATCHES_CACHE.keys(), key=lambda k: TODAYS_MATCHES_CACHE[k]["time"])
+        TODAYS_MATCHES_CACHE.pop(oldest, None)
     return payload
-
 
 @app.get("/api/match_stats/{league_code}/{match_id}")
 def get_match_stats_route(league_code: str, match_id: str):
@@ -898,3 +904,20 @@ def get_card_profile_detail_route(
         return {"status": "success", "profile": profile}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+@app.get("/api/search")
+def global_search_route(q: str = ""):
+    try:
+        res = db.global_platform_search(q)
+        return {"status": "success", "query": q, "results": res}
+    except Exception as e:
+        return {"status": "error", "results": {"clubs": [], "nations": [], "transfers": [], "news": []}, "message": str(e)}
+
+
+@app.get("/api/club_recent/{league_code}/{team_id}")
+def club_recent_results_route(league_code: str, team_id: str):
+    try:
+        items = db.get_club_recent_results(league_code.upper(), team_id)
+        return {"status": "success", "matches": items}
+    except Exception as e:
+        return {"status": "error", "matches": [], "message": str(e)}

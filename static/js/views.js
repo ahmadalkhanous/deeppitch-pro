@@ -398,6 +398,85 @@ function refreshCurrentView(forceRefresh = true) {
 // =========================================================
 // البحث العالمي السريع (Global Quick Search)
 // =========================================================
+// =========================================================
+// إشعار Toast موحد بديل عن alert() التقليدي
+// =========================================================
+window.showAppToast = function(msg) {
+  const old = document.getElementById('dp-mobile-toast');
+  if (old) old.remove();
+  const toast = document.createElement('div');
+  toast.id = 'dp-mobile-toast';
+  toast.style.cssText = `
+    position: fixed; top: 72px; left: 50%; transform: translateX(-50%);
+    background: var(--card, #121a2b); border: 1px solid var(--accent-green, #10b981);
+    color: var(--text, #f8fafc); padding: 9px 18px; border-radius: 99px; font-size: 0.82rem;
+    font-weight: 800; z-index: 3500; box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+    white-space: nowrap; max-width: 92vw; overflow: hidden; text-overflow: ellipsis; direction: rtl;
+  `;
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => { if (toast.parentNode) toast.remove(); }, 2600);
+};
+
+// =========================================================
+// البحث العالمي السريع (Global Quick Search) وفتح ملف النادي
+// =========================================================
+window._globalSearchLoading = false;
+
+async function preloadGlobalSearchSources() {
+  if (window._globalSearchLoading) return;
+  const tasks = [];
+  const curLg = (typeof activeLeague !== 'undefined' && activeLeague) ? activeLeague : 'PL';
+
+  if (!window._cachedStandingsData || window._cachedStandingsData.length === 0) {
+    tasks.push(
+      fetch(`/api/official_standings/${curLg}?refresh=false`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          const list = d && (d.standings || (Array.isArray(d) ? d : []));
+          if (list && list.length > 0) {
+            window._cachedStandingsData = list;
+            window._cachedStandingsLeague = curLg;
+          }
+        }).catch(() => {})
+    );
+  }
+
+  if (typeof currentNewsItems !== 'undefined' && currentNewsItems.length === 0) {
+    tasks.push(
+      fetch('/api/news?refresh=false')
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d && Array.isArray(d.news)) currentNewsItems = d.news; })
+        .catch(() => {})
+    );
+  }
+
+  if (window._mercatoState && window._mercatoState.transfersList.length === 0) {
+    tasks.push(
+      fetch('/api/mercato?refresh=false')
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          if (d && d.status === 'success') {
+            window._mercatoState.transfersList = d.transfers || [];
+            window._mercatoState.contractsList = d.contracts || [];
+            window._mercatoState.tickerNews = d.ticker || [];
+          }
+        }).catch(() => {})
+    );
+  }
+
+  if (tasks.length === 0) return;
+  window._globalSearchLoading = true;
+  await Promise.all(tasks);
+  window._globalSearchLoading = false;
+
+  const modal = document.getElementById('global-search-modal');
+  const inp = document.getElementById('dp-global-search-input');
+  if (modal && modal.style.display === 'flex' && inp && inp.value.trim().length >= 2) {
+    window.runGlobalQuickSearch(inp.value);
+  }
+}
+
 window.openGlobalSearchModal = function() {
   const modal = document.getElementById('global-search-modal');
   const inp = document.getElementById('dp-global-search-input');
@@ -405,57 +484,70 @@ window.openGlobalSearchModal = function() {
   modal.style.display = 'flex';
   document.body.style.overflow = 'hidden';
   if (inp) { inp.value = ''; inp.focus(); }
-  runGlobalQuickSearch('');
+  window.runGlobalQuickSearch('');
+  preloadGlobalSearchSources();
 };
 
-window.runGlobalQuickSearch = function(query) {
+window.openDirectSearchClub = function(lg, tid, rawName, arName, crest, rank) {
+  if (typeof window.closeModal === 'function') window.closeModal('global-search-modal');
+  if (typeof openEntityHistoryModal === 'function') {
+    openEntityHistoryModal(
+      'club',
+      encodeURIComponent(rawName || arName || ''),
+      encodeURIComponent(arName || rawName || ''),
+      encodeURIComponent(crest || ''),
+      lg || window._cachedStandingsLeague || (typeof activeLeague !== 'undefined' ? activeLeague : 'PL'),
+      rank || '-',
+      tid || ''
+    );
+  }
+};
+
+window.runGlobalQuickSearch = function(rawQuery) {
   const box = document.getElementById('dp-global-search-results');
   if (!box) return;
-  const q = (query || '').trim().toLowerCase();
+  const q = (rawQuery || '').trim().toLowerCase();
+
   if (q.length < 2) {
-    box.innerHTML = '<div style="text-align:center; padding:24px 10px; color:var(--muted); font-size:0.84rem;">اكتب حرفين على الأقل للبحث في المباريات، الأندية، الأخبار، والانتقالات</div>';
+    box.innerHTML = '<div style="text-align:center; padding:24px 10px; color:var(--muted); font-size:0.84rem;">اكتب حرفين على الأقل للبحث السريع في المباريات والأندية والأخبار والانتقالات والعقود</div>';
     return;
   }
 
-  const hits = [];
+  const results = [];
 
+  // 1. البحث في مباريات اليوم
   (window.currentTodayMatches || []).forEach((m, idx) => {
-    if (`${m.home_team} ${m.away_team} ${m.league_name}`.toLowerCase().includes(q)) {
-      hits.push({
-        badge: m.is_live ? 'مباشر' : 'اليوم',
+    const hay = `${m.home_team} ${m.away_team} ${m.home_en || ''} ${m.away_en || ''} ${m.league_name}`.toLowerCase();
+    if (hay.includes(q)) {
+      results.push({
+        type: 'مباراة',
         title: `${m.home_team} ضد ${m.away_team}`,
-        sub: `${m.league_name} • ${m.status_text}`,
-        action: `closeModal('global-search-modal'); activateSection('today'); openTodayMatchModal(${idx});`
+        sub: `${m.league_name} • ${m.state === 'pre' ? formatLocalKickoff(m.kickoff_iso, m.kickoff_time, true) : `${m.home_score} - ${m.away_score}`}`,
+        action: `closeModal('global-search-modal'); openTodayMatchModal(${idx});`
       });
     }
   });
 
-  (window.currentFixtures || []).forEach((f, idx) => {
-    if (`${f.home.name} ${f.home.short} ${f.away.name} ${f.away.short}`.toLowerCase().includes(q)) {
-      hits.push({
-        badge: 'الجولة',
-        title: `${f.home.short} vs ${f.away.short}`,
-        sub: `توقع ${f.predicted_score} • ${f.edge.label}`,
-        action: `closeModal('global-search-modal'); activateSection('fixtures'); openModal(${idx});`
+  // 2. البحث في أندية الترتيب
+  const curLg = window._cachedStandingsLeague || (typeof activeLeague !== 'undefined' && activeLeague ? activeLeague : 'PL');
+  (window._cachedStandingsData || []).forEach(t => {
+    const hay = `${t.short_name || ''} ${t.team_name || ''}`.toLowerCase();
+    if (hay.includes(q)) {
+      results.push({
+        type: 'نادٍ',
+        title: t.short_name || t.team_name,
+        sub: `المركز #${t.rank} • ${t.points} نقطة`,
+        action: `openDirectSearchClub('${escapeHtml(curLg)}', '${escapeHtml(t.team_id || '')}', '${escapeHtml((t.team_name || t.short_name || '').replace(/'/g, ''))}', '${escapeHtml((t.short_name || t.team_name || '').replace(/'/g, ''))}', '${escapeHtml(t.crest || '')}', '${escapeHtml(t.rank)}')`
       });
     }
   });
 
-  ((window._mercatoState && window._mercatoState.transfersList) || []).forEach(t => {
-    if (`${t.name} ${t.from_club} ${t.to_club}`.toLowerCase().includes(q)) {
-      hits.push({
-        badge: 'انتقال',
-        title: t.name,
-        sub: `${t.from_club} ⬅️ ${t.to_club} (${t.status_label})`,
-        action: `closeModal('global-search-modal'); activateSection('transfers'); openMercatoDetailModal('transfers', '${escapeHtml(t.id)}');`
-      });
-    }
-  });
-
-  (currentNewsItems || []).forEach((n, idx) => {
-    if (`${n.title} ${n.summary}`.toLowerCase().includes(q)) {
-      hits.push({
-        badge: 'خبر',
+  // 3. البحث في الأخبار
+  (typeof currentNewsItems !== 'undefined' ? currentNewsItems : []).forEach((n, idx) => {
+    const hay = `${n.title || ''} ${n.summary || ''}`.toLowerCase();
+    if (hay.includes(q)) {
+      results.push({
+        type: 'خبر',
         title: n.title,
         sub: n.published_time || 'غرفة الأخبار',
         action: `closeModal('global-search-modal'); openNewsArticle(${idx});`
@@ -463,37 +555,56 @@ window.runGlobalQuickSearch = function(query) {
     }
   });
 
-  if (hits.length === 0) {
-    box.innerHTML = `
-      <div class="dp-empty-state" style="padding:22px;">
-        <div style="font-size:0.86rem;">لم نجد نتائج محملة لـ "${escapeHtml(query)}"</div>
-        <button type="button" class="ai-btn" onclick="closeModal('global-search-modal'); window._cardsHubState.searchQuery='${escapeHtml(query).replace(/'/g, '')}'; activateSection('cards');">
-          البحث في موسوعة البطاقات ⬅️
-        </button>
-      </div>
-    `;
+  // 4. البحث في الميركاتو وتجديد العقود
+  ((window._mercatoState && window._mercatoState.transfersList) || []).forEach(item => {
+    const hay = `${item.name} ${item.from_club} ${item.to_club || ''}`.toLowerCase();
+    if (hay.includes(q)) {
+      results.push({
+        type: 'انتقال',
+        title: item.name,
+        sub: `${item.from_club} ⬅️ ${item.to_club || ''} (${item.status_label})`,
+        action: `closeModal('global-search-modal'); openMercatoDetailModal('transfers', '${escapeHtml(item.id)}');`
+      });
+    }
+  });
+
+  ((window._mercatoState && window._mercatoState.contractsList) || []).forEach(item => {
+    const hay = `${item.name} ${item.from_club || ''}`.toLowerCase();
+    if (hay.includes(q)) {
+      results.push({
+        type: 'عقد',
+        title: item.name,
+        sub: `${item.from_club} • ${item.status_label}`,
+        action: `closeModal('global-search-modal'); openMercatoDetailModal('contracts', '${escapeHtml(item.id)}');`
+      });
+    }
+  });
+
+  if (results.length === 0) {
+    box.innerHTML = window._globalSearchLoading
+      ? '<div style="text-align:center; padding:24px 10px; color:var(--accent-green); font-size:0.84rem; font-weight:700;">جاري فحص بيانات الأندية والأخبار والميركاتو...</div>'
+      : '<div style="text-align:center; padding:24px 10px; color:var(--muted); font-size:0.84rem;">لم يتم العثور على نتائج مطابقة حالياً.</div>';
     return;
   }
 
-  box.innerHTML = hits.slice(0, 12).map(h => `
-    <div class="dp-search-item" onclick="${h.action}">
-      <div style="min-width:0; flex:1;">
-        <div style="font-weight:800; font-size:0.86rem; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(h.title)}</div>
-        <div style="font-size:0.74rem; color:var(--muted); margin-top:2px;">${escapeHtml(h.sub)}</div>
+  box.innerHTML = results.slice(0, 16).map(r => `
+    <div class="dp-search-item" onclick="${r.action}">
+      <div style="min-width:0;">
+        <div style="font-weight:800; font-size:0.86rem; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(r.title)}</div>
+        <div style="font-size:0.74rem; color:var(--muted); margin-top:2px;">${escapeHtml(r.sub)}</div>
       </div>
-      <span class="hub-badge">${escapeHtml(h.badge)}</span>
+      <span class="hub-badge">${escapeHtml(r.type)}</span>
     </div>
   `).join('');
 };
 
-// تفعيل التوجيه بالرابط وزر الرجوع التلقائي عند فتح الموقع
+// تفعيل التوجيه بالرابط وزر الرجوع التلقائي بشكل متزامن مع النوافذ
 window.addEventListener('hashchange', () => {
-  const openModalEl = Array.from(document.querySelectorAll('.modal-overlay')).find(m => m.style.display === 'flex');
-  if (openModalEl) {
-    openModalEl.style.display = 'none';
-    document.body.style.overflow = '';
-    return;
-  }
+  document.querySelectorAll('.modal-overlay').forEach(m => {
+    if (m.style.display === 'flex') m.style.display = 'none';
+  });
+  document.body.style.overflow = '';
+  document.documentElement.style.overflow = '';
   const sec = (window.location.hash || '#today').replace('#', '');
   if (sec && sec !== window.activeSection) activateSection(sec, true);
 });
@@ -607,81 +718,264 @@ async function loadGameweek(leagueCode, forceRefresh = false) {
 }
 
 // =========================================================
-// 3. مباريات اليوم المباشرة
+// 3. مركز المباريات المباشر (الشاشة الرئيسية المطورة - Phase 2)
 // =========================================================
 window._todayStatusFilter = 'ALL';
+window._todayLeagueFilter = 'ALL';
+window._todaySelectedDateKey = 'today'; // 'today' | 'YYYY-MM-DD'
+window._collapsedLeagueGroups = {};
+
+function computeIsoDateOffset(daysOffset) {
+  const d = new Date();
+  d.setDate(d.getDate() + daysOffset);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function renderWeekDateStrip() {
+  const strip = document.getElementById('dp-date-strip');
+  if (!strip) return;
+
+  const todayIso = computeIsoDateOffset(0);
+  const activeKey = window._todaySelectedDateKey === 'today'
+    ? todayIso
+    : (window._todaySelectedDateKey === 'yesterday'
+      ? computeIsoDateOffset(-1)
+      : (window._todaySelectedDateKey === 'tomorrow'
+        ? computeIsoDateOffset(1)
+        : window._todaySelectedDateKey));
+
+  const offsets = [-3, -2, -1, 0, 1, 2, 3];
+  const dayNames = ['أحد', 'إثنين', 'ثلاثاء', 'أربعاء', 'خميس', 'جمعة', 'سبت'];
+  let matchedInStrip = false;
+
+  strip.innerHTML = offsets.map(off => {
+    const dt = new Date();
+    dt.setDate(dt.getDate() + off);
+    const iso = computeIsoDateOffset(off);
+    const isActive = (iso === activeKey);
+    if (isActive) matchedInStrip = true;
+
+    let label = dayNames[dt.getDay()];
+    if (off === -1) label = 'أمس';
+    else if (off === 0) label = 'اليوم';
+    else if (off === 1) label = 'غداً';
+
+    const dayNum = dt.getDate();
+    const keyParam = (off === 0) ? 'today' : iso;
+
+    return `
+      <button type="button" class="dp-week-day-btn ${isActive ? 'active' : ''} ${off === 0 ? 'is-today' : ''}" data-iso="${iso}" onclick="selectMatchCenterDate('${keyParam}')">
+        <span class="dp-wd-name">${label}</span>
+        <span class="dp-wd-num">${dayNum}</span>
+      </button>
+    `;
+  }).join('');
+
+  const calBtn = document.getElementById('dp-cal-trigger-btn');
+  if (calBtn) calBtn.classList.toggle('is-active', !matchedInStrip);
+
+  const activeBtn = strip.querySelector('.dp-week-day-btn.active');
+  if (activeBtn && typeof activeBtn.scrollIntoView === 'function') {
+    try { activeBtn.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' }); } catch (e) {}
+  }
+}
+
+window.selectMatchCenterDate = function(dayKey) {
+  if (!dayKey) return;
+  const todayIso = computeIsoDateOffset(0);
+  if (dayKey === todayIso) dayKey = 'today';
+  else if (dayKey === 'yesterday') dayKey = computeIsoDateOffset(-1);
+  else if (dayKey === 'tomorrow') dayKey = computeIsoDateOffset(1);
+
+  window._todaySelectedDateKey = dayKey;
+  window._todayStatusFilter = 'ALL';
+  window._todayLeagueFilter = 'ALL';
+
+  const calInput = document.getElementById('dp-custom-date-input');
+  if (calInput) calInput.value = (dayKey === 'today') ? todayIso : dayKey;
+
+  renderWeekDateStrip();
+  loadTodayMatches(true);
+};
 
 window.setTodayStatusFilter = function(filterKey) {
   window._todayStatusFilter = filterKey;
   renderTodayMatchesGrouped(window.currentTodayMatches || []);
 };
 
-function renderTodayMatchCardHtml(m, origIdx) {
-  const isFav = typeof window.isClubFavoritePublic === 'function' &&
-    (window.isClubFavoritePublic(m.home_team) || window.isClubFavoritePublic(m.away_team));
+window.setTodayLeagueFilter = function(leagueCode) {
+  window._todayLeagueFilter = leagueCode;
+  renderTodayMatchesGrouped(window.currentTodayMatches || []);
+};
+
+window.toggleLeagueAccordion = function(groupKey) {
+  window._collapsedLeagueGroups[groupKey] = !window._collapsedLeagueGroups[groupKey];
+  const card = document.querySelector(`.dp-league-card[data-group-key="${CSS.escape(groupKey)}"]`);
+  if (card) card.classList.toggle('is-collapsed', Boolean(window._collapsedLeagueGroups[groupKey]));
+};
+
+function pickFeaturedMatchItem(indexedMatches) {
+  if (!indexedMatches || indexedMatches.length === 0) return null;
+  const bigKeywords = [
+    'real madrid', 'barcelona', 'liverpool', 'man city', 'manchester city', 'arsenal',
+    'chelsea', 'man united', 'manchester united', 'bayern', 'dortmund', 'inter',
+    'milan', 'juventus', 'psg', 'al hilal', 'al nassr', 'al ahly', 'zamalek',
+    'spain', 'france', 'england', 'germany', 'portugal', 'italy'
+  ];
+
+  const scoreItem = (x) => {
+    const m = x.m;
+    const text = `${m.home_team} ${m.away_team} ${m.home_en || ''} ${m.away_en || ''}`.toLowerCase();
+    const isFav = typeof window.isClubFavoritePublic === 'function' &&
+      (window.isClubFavoritePublic(m.home_team) || window.isClubFavoritePublic(m.away_team));
+    const bigHits = bigKeywords.filter(k => text.includes(k)).length;
+    let pts = 0;
+    if (m.is_live) pts += 60;
+    else if (m.state === 'pre') pts += 30;
+    if (isFav) pts += 50;
+    if (m.league_code === 'UCL') pts += 25;
+    pts += bigHits * 18;
+    return pts;
+  };
+
+  let best = indexedMatches[0];
+  let bestScore = scoreItem(best);
+  for (let i = 1; i < indexedMatches.length; i++) {
+    const sc = scoreItem(indexedMatches[i]);
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = indexedMatches[i];
+    }
+  }
+  return best;
+}
+
+function renderFeaturedHeroHtml(featured) {
+  const heroBox = document.getElementById('today-featured-hero');
+  if (!heroBox) return;
+  if (!featured) {
+    heroBox.innerHTML = '';
+    return;
+  }
+
+  const m = featured.m;
+  const localTime = formatLocalKickoff(m.kickoff_iso, m.kickoff_time, true);
+  const scoreHtml = m.state === 'pre'
+    ? `<div class="dp-hero-score is-pre">${escapeHtml(localTime)}</div>
+       <div class="dp-hero-sub">موعد الانطلاق</div>`
+    : `<div class="dp-hero-score ${m.is_live ? 'is-live' : ''}">${escapeHtml(m.home_score)} - ${escapeHtml(m.away_score)}</div>
+       <div class="dp-hero-sub ${m.is_live ? 'is-live' : ''}">${escapeHtml(m.status_text)}</div>`;
+
+  const kickerLabel = m.is_live ? 'المباراة المباشرة الأبرز' : 'قمة اليوم المختارة';
+
+  heroBox.innerHTML = `
+    <div class="dp-hero-match ${m.is_live ? 'is-live' : ''}" onclick="openTodayMatchModal(${featured.idx})">
+      <div class="dp-hero-top">
+        <span class="dp-hero-kicker">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+          <span>${kickerLabel}</span>
+        </span>
+        <span class="dp-hero-league">
+          ${m.is_live
+            ? `<span class="live-badge"><span class="live-dot-pulse"></span> مباشر</span>`
+            : `<span class="dp-inline-league-tag">${typeof renderLeagueLogoHtml === 'function' ? renderLeagueLogoHtml(m.league_code, m.league_flag, 'size-xs', m.league_logo) : (m.league_flag || '')}<span>${escapeHtml(m.league_name)}</span></span>`
+          }
+        </span>
+      </div>
+
+      <div class="dp-hero-body">
+        <div class="dp-hero-team">
+          <img src="${escapeHtml(m.home_crest)}" alt="" onerror="this.src='https://via.placeholder.com/48?text=FC'">
+          <div class="dp-hero-team-name">${escapeHtml(m.home_team)}</div>
+        </div>
+
+        <div class="dp-hero-center">
+          ${scoreHtml}
+        </div>
+
+        <div class="dp-hero-team">
+          <img src="${escapeHtml(m.away_crest)}" alt="" onerror="this.src='https://via.placeholder.com/48?text=FC'">
+          <div class="dp-hero-team-name">${escapeHtml(m.away_team)}</div>
+        </div>
+      </div>
+
+      <div class="dp-hero-footer">
+        <span class="dp-hero-meta-txt">${escapeHtml(m.channel_verified ? m.channel : (m.venue || m.league_name))}</span>
+        <span class="dp-hero-cta">مركز المباراة ↗</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderMatchRowHtml(m, origIdx) {
+  const isHomeFav = typeof window.isClubFavoritePublic === 'function' && window.isClubFavoritePublic(m.home_team);
+  const isAwayFav = typeof window.isClubFavoritePublic === 'function' && window.isClubFavoritePublic(m.away_team);
+  const pillCls = m.is_live ? 'is-live' : (m.state === 'pre' ? 'is-pre' : '');
+  const scoreContent = m.state === 'pre'
+    ? formatLocalKickoff(m.kickoff_iso, m.kickoff_time, true)
+    : `${escapeHtml(m.home_score)} - ${escapeHtml(m.away_score)}`;
+
+  const showBcastSub = m.channel_verified || m.commentator_verified;
 
   return `
-    <div class="today-card ${m.is_live ? 'live-match' : ''} ${isFav ? 'dp-fav-match-card' : ''}" data-match-id="${escapeHtml(m.id)}" onclick="openTodayMatchModal(${origIdx})">
-      <div class="today-header">
-        <span>${m.league_flag || '⚽'} ${escapeHtml(m.league_name)}</span>
-        ${m.is_live
-          ? `<span class="live-badge"><span class="live-dot-pulse"></span> ${escapeHtml(m.status_text)}</span>`
-          : `<span style="color:var(--muted);">${escapeHtml(m.status_text)} • ${formatLocalKickoff(m.kickoff_iso, m.kickoff_time, true)}</span>`}
+    <div class="dp-match-row ${m.is_live ? 'is-live' : ''}" data-match-id="${escapeHtml(m.id)}" onclick="openTodayMatchModal(${origIdx})">
+      <div class="dp-row-side home">
+        <button type="button" class="dp-fav-star-btn dp-row-fav ${isHomeFav ? 'is-fav' : ''}" data-club="${escapeHtml(m.home_team)}" onclick="window.toggleFavoriteClub(this.dataset.club, event)" title="إضافة ${escapeHtml(m.home_team)} للمفضلة">${isHomeFav ? '★' : '☆'}</button>
+        <span class="dp-row-team-name">${escapeHtml(m.home_team)}</span>
+        <img src="${escapeHtml(m.home_crest)}" alt="" loading="lazy" onerror="this.src='https://via.placeholder.com/24?text=FC'">
       </div>
 
-      <div class="today-body">
-        <div class="today-team">
-          <img src="${escapeHtml(m.home_crest)}" width="42" height="42" alt="" onerror="this.src='https://via.placeholder.com/42?text=FC'">
-          <div style="font-weight:800; font-size:0.88rem; display:flex; align-items:center; gap:3px; justify-content:center;">
-            <span>${escapeHtml(m.home_team)}</span>
-            <button type="button" class="dp-fav-star-btn ${typeof window.isClubFavoritePublic === 'function' && window.isClubFavoritePublic(m.home_team) ? 'is-fav' : ''}" onclick="window.toggleFavoriteClub('${escapeHtml(m.home_team).replace(/'/g, '')}', event)" title="إضافة للمفضلة">${typeof window.isClubFavoritePublic === 'function' && window.isClubFavoritePublic(m.home_team) ? '⭐' : '☆'}</button>
-          </div>
+      <div class="dp-row-center">
+        <div class="dp-row-score-pill ${pillCls}">${scoreContent}</div>
+        <div class="dp-row-status ${m.is_live ? 'is-live' : ''}">${escapeHtml(m.status_text)}</div>
+      </div>
+
+      <div class="dp-row-side away">
+        <img src="${escapeHtml(m.away_crest)}" alt="" loading="lazy" onerror="this.src='https://via.placeholder.com/24?text=FC'">
+        <span class="dp-row-team-name">${escapeHtml(m.away_team)}</span>
+        <button type="button" class="dp-fav-star-btn dp-row-fav ${isAwayFav ? 'is-fav' : ''}" data-club="${escapeHtml(m.away_team)}" onclick="window.toggleFavoriteClub(this.dataset.club, event)" title="إضافة ${escapeHtml(m.away_team)} للمفضلة">${isAwayFav ? '★' : '☆'}</button>
+      </div>
+
+      ${showBcastSub ? `
+        <div class="dp-row-bcast-sub">
+          ${m.channel_verified ? `<span>${escapeHtml(m.channel)}</span>` : ''}
+          ${m.channel_verified && m.commentator_verified ? `<span>•</span>` : ''}
+          ${m.commentator_verified ? `<span class="dp-bcast-comm">${escapeHtml(m.commentator)}</span>` : ''}
         </div>
-
-        <div class="today-score-box">
-          ${m.state === 'pre'
-            ? `<div style="font-size:1rem; color:var(--accent-gold-bright);">${formatLocalKickoff(m.kickoff_iso, m.kickoff_time, true)}</div>`
-            : `<span style="color:${m.is_live ? 'var(--accent-red)' : 'var(--text)'}; font-size:1.25rem; font-weight:900;">${escapeHtml(m.home_score)} - ${escapeHtml(m.away_score)}</span>`}
-        </div>
-
-        <div class="today-team">
-          <img src="${escapeHtml(m.away_crest)}" width="42" height="42" alt="" onerror="this.src='https://via.placeholder.com/42?text=FC'">
-          <div style="font-weight:800; font-size:0.88rem; display:flex; align-items:center; gap:3px; justify-content:center;">
-            <span>${escapeHtml(m.away_team)}</span>
-            <button type="button" class="dp-fav-star-btn ${typeof window.isClubFavoritePublic === 'function' && window.isClubFavoritePublic(m.away_team) ? 'is-fav' : ''}" onclick="window.toggleFavoriteClub('${escapeHtml(m.away_team).replace(/'/g, '')}', event)" title="إضافة للمفضلة">${typeof window.isClubFavoritePublic === 'function' && window.isClubFavoritePublic(m.away_team) ? '⭐' : '☆'}</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="today-meta">
-        <div>🏟️ <strong>الملعب:</strong> ${escapeHtml(m.venue)}</div>
-        <div>📺 <strong>القناة:</strong> ${escapeHtml(m.channel)}</div>
-        <div style="grid-column: 1/-1;">🎙️ <strong>المعلق:</strong> ${escapeHtml(m.commentator)}</div>
-      </div>
-
-      <div style="text-align:center; font-size:0.74rem; color:var(--accent-green); font-weight:700; margin-top:10px; border-top:1px solid var(--card-border); padding-top:8px;">
-        فتح مركز المباراة: الإحصائيات • الزخم والتسديدات • المحللين • التشكيلة
-      </div>
+      ` : ''}
     </div>
   `;
 }
 
 function renderTodayMatchesGrouped(matches) {
   const container = document.getElementById('today-matches-container');
+  const filtersBox = document.getElementById('today-filters-bar');
   if (!container) return;
 
   if (!matches || matches.length === 0) {
+    renderFeaturedHeroHtml(null);
+    if (filtersBox) filtersBox.innerHTML = '';
     container.innerHTML = `
-      <div class="dp-empty-state" style="grid-column:1/-1;">
-        <div style="font-size:1.8rem;">⚽</div>
-        <div style="font-weight:800; color:var(--text);">لا توجد مباريات مجدولة لليوم في البطولات المدعومة</div>
-        <button type="button" class="ai-btn" onclick="navigateToPillar('competitions')">استعراض مباريات الجولة القادمة ⬅️</button>
+      <div class="dp-empty-state">
+        <svg viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="1.6" width="38" height="38"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+        <div style="font-weight:800; color:var(--text); font-size:0.96rem;">لا توجد مباريات مجدولة في هذا التاريخ</div>
+        <div style="font-size:0.8rem; color:var(--muted);">جرّب اختيار يوم آخر من التقويم بالأعلى أو استعرض توقعات الجولة القادمة.</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:center; margin-top:6px;">
+          <button type="button" class="retry-btn" onclick="selectMatchCenterDate('tomorrow')">مباريات غداً</button>
+          <button type="button" class="ai-btn" onclick="navigateToPillar('competitions')">توقعات الجولة القادمة</button>
+        </div>
       </div>
     `;
+    loadHomeQuietHighlightsStrip();
     return;
   }
 
   const indexed = matches.map((m, idx) => ({ m, idx }));
+
+
   const liveCount = indexed.filter(x => x.m.is_live).length;
   const preCount = indexed.filter(x => x.m.state === 'pre').length;
   const postCount = indexed.filter(x => x.m.state === 'post').length;
@@ -690,130 +984,235 @@ function renderTodayMatchesGrouped(matches) {
     (window.isClubFavoritePublic(x.m.home_team) || window.isClubFavoritePublic(x.m.away_team))
   );
 
-  const curFilter = window._todayStatusFilter || 'ALL';
-  const pills = [
+  // إحصاء عدد المباريات في كل بطولة لعرضها في قائمة منسدلة نظيفة
+  const leagueMap = new Map();
+  indexed.forEach(x => {
+    const code = x.m.league_code || 'OTHER';
+    if (!leagueMap.has(code)) {
+      leagueMap.set(code, { code, name: x.m.league_name, flag: x.m.league_flag || '', count: 0 });
+    }
+    leagueMap.get(code).count += 1;
+  });
+  const uniqueLeagues = Array.from(leagueMap.values());
+
+  const curStatus = window._todayStatusFilter || 'ALL';
+  const curLg = window._todayLeagueFilter || 'ALL';
+
+  const statusPills = [
     { key: 'ALL', label: `الكل (${indexed.length})` },
-    { key: 'LIVE', label: `🔴 مباشر (${liveCount})` },
+    { key: 'LIVE', label: `مباشر (${liveCount})` },
     { key: 'PRE', label: `قادمة (${preCount})` },
     { key: 'POST', label: `انتهت (${postCount})` }
   ];
-  if (favItems.length > 0) {
-    pills.splice(1, 0, { key: 'FAV', label: `⭐ المفضلة (${favItems.length})` });
+  if (favItems.length > 0) statusPills.splice(1, 0, { key: 'FAV', label: `★ المفضلة (${favItems.length})` });
+
+  // شريط فلاتر واحد مدمج ونظيف
+  if (filtersBox) {
+    filtersBox.innerHTML = `
+      <div class="dp-mc-filter-bar">
+        <div class="dp-filter-pills">
+          ${statusPills.map(p => `
+            <button type="button" class="dp-filter-pill ${curStatus === p.key ? 'active' : ''} ${p.key === 'LIVE' && liveCount > 0 ? 'has-live' : ''}" onclick="setTodayStatusFilter('${p.key}')">
+              ${p.key === 'LIVE' && liveCount > 0 ? '<span class="live-dot-pulse"></span>' : ''}
+              <span>${p.label}</span>
+            </button>
+          `).join('')}
+        </div>
+        ${uniqueLeagues.length > 1 ? `
+          <select class="dp-league-select" aria-label="تصفية حسب البطولة" onchange="setTodayLeagueFilter(this.value)">
+            <option value="ALL" ${curLg === 'ALL' ? 'selected' : ''}>كل البطولات (${uniqueLeagues.length})</option>
+            ${uniqueLeagues.map(lg => `
+              <option value="${escapeHtml(lg.code)}" ${curLg === lg.code ? 'selected' : ''}>${lg.flag} ${escapeHtml(lg.name)} (${lg.count})</option>
+            `).join('')}
+          </select>
+        ` : ''}
+      </div>
+    `;
   }
 
   let filtered = indexed;
-  if (curFilter === 'LIVE') filtered = indexed.filter(x => x.m.is_live);
-  else if (curFilter === 'PRE') filtered = indexed.filter(x => x.m.state === 'pre');
-  else if (curFilter === 'POST') filtered = indexed.filter(x => x.m.state === 'post');
-  else if (curFilter === 'FAV') filtered = favItems;
+  if (curStatus === 'LIVE') filtered = filtered.filter(x => x.m.is_live);
+  else if (curStatus === 'PRE') filtered = filtered.filter(x => x.m.state === 'pre');
+  else if (curStatus === 'POST') filtered = filtered.filter(x => x.m.state === 'post');
+  else if (curStatus === 'FAV') filtered = favItems;
 
-  const filterBarHtml = `
-    <div class="dp-h-scroll-bar" style="grid-column:1/-1; margin-bottom:4px;">
-      ${pills.map(p => `
-        <button type="button" class="q-chip-item ${curFilter === p.key ? 'active' : ''}" onclick="setTodayStatusFilter('${p.key}')">
-          ${p.label}
-        </button>
-      `).join('')}
-    </div>
-  `;
+  if (curLg !== 'ALL') {
+    filtered = filtered.filter(x => x.m.league_code === curLg);
+  }
 
   if (filtered.length === 0) {
-    container.innerHTML = filterBarHtml + `
-      <div class="dp-empty-state" style="grid-column:1/-1;">
+    container.innerHTML = `
+      <div class="dp-empty-state">
         <div>لا توجد مباريات مطابقة لهذا الفلتر حالياً.</div>
-        <button type="button" class="retry-btn" onclick="setTodayStatusFilter('ALL')">عرض جميع مباريات اليوم</button>
+        <button type="button" class="retry-btn" onclick="window._todayLeagueFilter='ALL'; setTodayStatusFilter('ALL');">إعادة ضبط الفلاتر</button>
       </div>
     `;
     return;
   }
 
   let groupsHtml = '';
-
-  // تثبيت أنديتك المفضلة في مجموعة مميزة في الأعلى عند عرض "الكل"
   const shownFavIds = new Set();
-  if (curFilter === 'ALL' && favItems.length > 0) {
+
+  if (curStatus === 'ALL' && curLg === 'ALL' && favItems.length > 0) {
     favItems.forEach(x => shownFavIds.add(x.m.id));
+    const favCollapsed = Boolean(window._collapsedLeagueGroups['FAV_GRP']);
     groupsHtml += `
-      <div class="dp-match-group" style="grid-column:1/-1;">
-        <div class="dp-match-group-hdr" style="border-right:3px solid var(--accent-gold);">
-          <span>⭐ مباريات أنديتك المفضلة</span>
-          <span class="hub-badge">${favItems.length}</span>
+      <div class="dp-league-card is-fav-group ${favCollapsed ? 'is-collapsed' : ''}" data-group-key="FAV_GRP">
+        <div class="dp-league-card-hdr" onclick="toggleLeagueAccordion('FAV_GRP')">
+          <div class="dp-league-hdr-right">
+            <span style="color:var(--accent-gold-bright);">★</span>
+            <span>مباريات أنديتك المفضلة</span>
+          </div>
+          <div class="dp-league-hdr-left">
+            <span class="hub-badge">${favItems.length}</span>
+            <svg class="dp-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
         </div>
-        <div class="today-grid">
-          ${favItems.map(x => renderTodayMatchCardHtml(x.m, x.idx)).join('')}
+        <div class="dp-league-rows">
+          ${favItems.map(x => renderMatchRowHtml(x.m, x.idx)).join('')}
         </div>
       </div>
     `;
   }
 
-  // تجميع بقية المباريات حسب البطولة
-  const byLeague = new Map();
+ const byLeague = new Map();
   filtered.forEach(item => {
-    if (curFilter === 'ALL' && shownFavIds.has(item.m.id)) return;
+    if (curStatus === 'ALL' && curLg === 'ALL' && shownFavIds.has(item.m.id)) return;
     const key = item.m.league_name || 'بطولات أخرى';
     if (!byLeague.has(key)) {
-      byLeague.set(key, { flag: item.m.league_flag || '⚽', name: key, items: [] });
+      byLeague.set(key, {
+        code: item.m.league_code || '',
+        logo: item.m.league_logo || '',
+        flag: item.m.league_flag || '',
+        name: key,
+        items: []
+      });
     }
     byLeague.get(key).items.push(item);
   });
 
-  byLeague.forEach(grp => {
+  byLeague.forEach((grp, gKey) => {
     const liveInGrp = grp.items.filter(x => x.m.is_live).length;
+    const isCollapsed = Boolean(window._collapsedLeagueGroups[gKey]);
     groupsHtml += `
-      <div class="dp-match-group" style="grid-column:1/-1;">
-        <div class="dp-match-group-hdr">
-          <span>${grp.flag} ${escapeHtml(grp.name)}</span>
-          <div style="display:flex; align-items:center; gap:6px;">
-            ${liveInGrp > 0 ? `<span class="live-badge" style="padding:2px 8px; font-size:0.68rem;"><span class="live-dot-pulse"></span> ${liveInGrp} مباشر</span>` : ''}
+      <div class="dp-league-card ${isCollapsed ? 'is-collapsed' : ''}" data-group-key="${escapeHtml(gKey)}">
+        <div class="dp-league-card-hdr" onclick="toggleLeagueAccordion(this.closest('.dp-league-card').dataset.groupKey)">
+          <div class="dp-league-hdr-right">
+            ${typeof renderLeagueLogoHtml === 'function' ? renderLeagueLogoHtml(grp.code, grp.flag, 'size-sm', grp.logo) : `<span>${grp.flag}</span>`}
+            <span>${escapeHtml(grp.name)}</span>
+          </div>
+          <div class="dp-league-hdr-left">
+            ${liveInGrp > 0 ? `<span class="live-badge" style="padding:2px 8px; font-size:0.66rem;"><span class="live-dot-pulse"></span> ${liveInGrp} مباشر</span>` : ''}
             <span class="hub-badge">${grp.items.length}</span>
+            <svg class="dp-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="6 9 12 15 18 9"/></svg>
           </div>
         </div>
-        <div class="today-grid">
-          ${grp.items.map(x => renderTodayMatchCardHtml(x.m, x.idx)).join('')}
+        <div class="dp-league-rows">
+          ${grp.items.map(x => renderMatchRowHtml(x.m, x.idx)).join('')}
         </div>
       </div>
     `;
   });
 
-  container.innerHTML = filterBarHtml + groupsHtml;
+  container.innerHTML = groupsHtml;
+  loadHomeQuietHighlightsStrip();
 }
 
-async function loadTodayMatches() {
+async function loadHomeQuietHighlightsStrip() {
+  const strip = document.getElementById('today-highlights-strip');
+  if (!strip || strip.dataset.loaded === '1') return;
+  strip.dataset.loaded = '1';
+
+  try {
+    const res = await fetch('/api/news');
+    const data = await res.json();
+    const newsList = (data && data.news) ? data.news.slice(0, 5) : [];
+    if (newsList.length === 0) return;
+    if (!currentNewsItems || currentNewsItems.length === 0) currentNewsItems = data.news || [];
+
+    strip.innerHTML = `
+      <div class="dp-side-card">
+        <div class="dp-side-card-hdr">
+          <span>أحدث الأخبار الرياضية</span>
+          <button type="button" class="dp-side-link-btn" onclick="activateSection('news')">عرض الكل ↗</button>
+        </div>
+        <div class="dp-side-news-list">
+          ${newsList.map((n, idx) => `
+            <div class="dp-side-news-item" onclick="openNewsArticle(${idx})">
+              ${n.image_url
+                ? `<img src="${escapeHtml(n.image_url)}" alt="" class="dp-side-news-thumb" loading="lazy" onerror="this.style.display='none'">`
+                : `<div class="dp-side-news-thumb is-fallback"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="20" height="20"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/></svg></div>`
+              }
+              <div class="dp-side-news-body">
+                <div class="dp-side-news-title">${escapeHtml(n.title)}</div>
+                <div class="dp-side-news-time">${escapeHtml(n.published_time || 'تحديث مباشر')}</div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  } catch (e) {}
+}
+
+async function loadTodayMatches(showSkeleton = false) {
   const container = document.getElementById('today-matches-container');
   const dateTxt = document.getElementById('today-date-txt');
-  const now = new Date();
-  if (dateTxt) dateTxt.innerText = now.toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   if (!container) return;
 
-  // عرض الهياكل العظمية في أول تحميل فقط لمنع الوميض أثناء التحديث التلقائي
-  if (!window.currentTodayMatches || window.currentTodayMatches.length === 0) {
+  renderWeekDateStrip();
+
+  const todayIso = computeIsoDateOffset(0);
+  const dayKey = window._todaySelectedDateKey || 'today';
+  let queryDate = '';
+  let labelDateObj = new Date();
+
+  if (dayKey !== 'today' && dayKey !== todayIso) {
+    queryDate = dayKey;
+    const parsed = new Date(dayKey + 'T12:00:00');
+    if (!isNaN(parsed.getTime())) labelDateObj = parsed;
+  }
+
+  if (dateTxt) {
+    dateTxt.innerText = labelDateObj.toLocaleDateString('ar-EG', { weekday: 'long', day: 'numeric', month: 'long' });
+  }
+
+  if (showSkeleton || !window.currentTodayMatches || window.currentTodayMatches.length === 0) {
     container.innerHTML = renderSkeletonCardsHtml(4);
   }
 
   try {
-    const res = await fetch('/api/todays_matches');
+    const endpoint = queryDate ? `/api/todays_matches?date=${encodeURIComponent(queryDate)}` : '/api/todays_matches';
+    const res = await fetch(endpoint);
     const data = await res.json();
     const matches = data.matches || [];
     window.currentTodayMatches = matches;
 
-    if (typeof window.checkLiveScoreNotifications === 'function') {
+    if (!queryDate && typeof window.checkLiveScoreNotifications === 'function') {
       window.checkLiveScoreNotifications(matches);
     }
 
     renderTodayMatchesGrouped(matches);
 
+    if (queryDate) {
+      if (typeof todayPollingTimeout !== 'undefined' && todayPollingTimeout) clearTimeout(todayPollingTimeout);
+      const statusTxt = document.getElementById('polling-status-txt');
+      if (statusTxt) statusTxt.innerText = `جدول ${queryDate}`;
+      return;
+    }
+
     if (matches.length === 0) {
-      scheduleNextPoll(300000, 'لا توجد مباريات اليوم - فحص كل 5 دقائق');
+      scheduleNextPoll(300000, 'لا توجد مباريات اليوم');
       return;
     }
 
     const hasLiveMatch = matches.some(m => m.is_live);
     scheduleNextPoll(
       hasLiveMatch ? 35000 : 300000,
-      hasLiveMatch ? 'مباراة جارية - تحديث كل 35 ثانية' : 'تحديث هادئ كل 5 دقائق'
+      hasLiveMatch ? 'مباشر • تحديث كل 35ث' : 'تحديث تلقائي كل 5د'
     );
   } catch (e) {
-    scheduleNextPoll(60000, 'تعذر التحديث - إعادة المحاولة بعد دقيقة');
+    scheduleNextPoll(60000, 'تعذر التحديث - إعادة المحاولة');
   }
 }
 
@@ -821,15 +1220,10 @@ function scheduleNextPoll(delayMs, statusMessage) {
   const statusTxt = document.getElementById('polling-status-txt');
   if (statusTxt) statusTxt.innerText = statusMessage;
   if (typeof todayPollingTimeout !== 'undefined' && todayPollingTimeout) clearTimeout(todayPollingTimeout);
-  if (window.activeSection === 'today') {
-    todayPollingTimeout = setTimeout(loadTodayMatches, delayMs);
+  if (window.activeSection === 'today' && (window._todaySelectedDateKey || 'today') === 'today') {
+    todayPollingTimeout = setTimeout(() => loadTodayMatches(false), delayMs);
   }
 }
-
-// =========================================================
-// 4. جدول الترتيب الرسمي والهدافين (مربوط بنظام كل بطولة و UCL)
-// =========================================================
-// =========================================================
 // 4. جدول الترتيب الرسمي والهدافين (مع الفواصل البصرية وفلترة المستويات/المجموعات)
 // =========================================================
 window._cachedStandingsData = [];
@@ -852,13 +1246,13 @@ function buildGroupFilterTabsHtml(items, leagueCode, onClickFnName) {
   const code = (leagueCode || '').toUpperCase();
   if (!['UNL', 'ACL', 'CAF'].includes(code)) return '';
 
-  let tabs = [{ key: 'ALL', label: 'الكل 📋' }];
+  let tabs = [{ key: 'ALL', label: 'الكل' }];
   if (code === 'UNL') {
     tabs.push(
-      { key: 'LVL_A', label: 'المستوى A 🏆' },
-      { key: 'LVL_B', label: 'المستوى B ⬆️' },
-      { key: 'LVL_C', label: 'المستوى C ⬆️' },
-      { key: 'LVL_D', label: 'المستوى D ⬆️' }
+      { key: 'LVL_A', label: 'المستوى A' },
+      { key: 'LVL_B', label: 'المستوى B' },
+      { key: 'LVL_C', label: 'المستوى C' },
+      { key: 'LVL_D', label: 'المستوى D' }
     );
   } else {
     const seenGroups = [];
@@ -869,15 +1263,12 @@ function buildGroupFilterTabsHtml(items, leagueCode, onClickFnName) {
   }
 
   return `
-    <div class="dp-h-scroll-bar" style="display:flex; gap:8px; flex-wrap:nowrap; overflow-x:auto; margin-bottom:14px; padding:8px 10px; background:#070b15; border:1px solid var(--card-border); border-radius:14px;">
-      ${tabs.map(tb => {
-        const isAct = window._activeGroupFilter === tb.key;
-        return `
-          <button onclick="${onClickFnName}('${tb.key}')" style="flex:0 0 auto; white-space:nowrap; background:${isAct ? 'rgba(0,230,118,0.18)' : '#0f172a'}; color:${isAct ? 'var(--accent-green)' : '#cbd5e1'}; border:1px solid ${isAct ? 'var(--accent-green)' : '#1e293b'}; padding:5px 14px; border-radius:20px; font-size:0.78rem; font-weight:800; cursor:pointer; transition:all 0.2s;">
-            ${tb.label}
-          </button>
-        `;
-      }).join('')}
+    <div class="dp-h-scroll-bar" style="margin-bottom:12px;">
+      ${tabs.map(tb => `
+        <button type="button" class="q-chip-item ${window._activeGroupFilter === tb.key ? 'active' : ''}" onclick="${onClickFnName}('${escapeHtml(tb.key)}')">
+          ${escapeHtml(tb.label)}
+        </button>
+      `).join('')}
     </div>
   `;
 }
@@ -928,14 +1319,12 @@ function renderStandingsTableRows(standings, leagueCode) {
     if (t.group_name && t.group_name !== lastGroup) {
       lastGroup = t.group_name;
       const ruleSub = getGroupRuleSubtitle(leagueCode, t.group_name, t.level_code);
-      rowsHtml.push(`
+    rowsHtml.push(`
         <tr class="group-divider-row">
-          <td colspan="10" style="background:linear-gradient(90deg, rgba(0,230,118,0.14) 0%, rgba(0,210,255,0.08) 50%, rgba(13,20,36,0.95) 100%); border-top:2px solid var(--accent-green); border-bottom:1px solid var(--card-border); padding:10px 14px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-              <span style="font-weight:900; font-size:0.92rem; color:var(--accent-green); display:flex; align-items:center; gap:6px;">
-                <span>📌</span> <span>${t.group_name}</span>
-              </span>
-              ${ruleSub ? `<span style="font-size:0.74rem; color:#cbd5e1; font-weight:700; background:rgba(5,8,17,0.65); padding:3px 10px; border-radius:12px; border:1px solid #1e293b;">${ruleSub}</span>` : ''}
+          <td colspan="10" class="dp-group-divider-cell">
+            <div class="dp-group-divider-wrap">
+              <span class="dp-group-divider-title">${escapeHtml(t.group_name)}</span>
+              ${ruleSub ? `<span class="dp-group-divider-sub">${escapeHtml(ruleSub)}</span>` : ''}
             </div>
           </td>
         </tr>
@@ -967,20 +1356,26 @@ function renderStandingsTableRows(standings, leagueCode) {
     }
 
     // شارة لونية صامتة (نقطة مضيئة أنيقة بدون أي كلام) بجانب اسم النادي
+  // الحد اللوني بجانب رقم المركز يكفي بصرياً دون تكرار النقطة
     let statusBadge = "";
-    if (zoneClass) {
-      const dotCol = zoneClass === "rank-ucl" ? "var(--accent-cyan)" : (zoneClass === "rank-uel" ? "var(--accent-gold)" : "var(--accent-red)");
-      const dotShadow = zoneClass === "rank-ucl" ? "rgba(0,210,255,0.55)" : (zoneClass === "rank-uel" ? "rgba(255,214,0,0.55)" : "rgba(255,82,82,0.55)");
-      statusBadge = `<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${dotCol}; box-shadow:0 0 8px ${dotShadow}; margin-right:6px; flex-shrink:0;"></span>`;
-    }
 
     rowsHtml.push(`
       <tr>
         <td class="${zoneClass}"><strong>${t.rank}</strong></td>
-        <td class="team-col-cell">
+       <td class="team-col-cell">
           <div style="display:flex; align-items:center; gap:6px;">
-            <img src="${t.crest}" width="20" height="20" onerror="this.src='https://via.placeholder.com/20?text=FC'">
-            <strong class="team-title-sm">${t.short_name || t.team_name}</strong>
+            <span style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;"
+              data-lg="${escapeHtml(leagueCode)}"
+              data-tid="${escapeHtml(t.team_id || '')}"
+              data-raw="${escapeHtml(t.team_name || t.short_name)}"
+              data-ar="${escapeHtml(t.short_name || t.team_name)}"
+              data-crest="${escapeHtml(t.crest || '')}"
+              data-rank="${escapeHtml(t.rank)}"
+              onclick="openDirectSearchClub(this.dataset.lg, this.dataset.tid, this.dataset.raw, this.dataset.ar, this.dataset.crest, this.dataset.rank)"
+              title="اضغط لعرض ملف النادي وألقابه وآخر 5 نتائج">
+              <img src="${escapeHtml(t.crest)}" width="20" height="20" onerror="this.src='https://via.placeholder.com/20?text=FC'">
+              <strong class="team-title-sm">${escapeHtml(t.short_name || t.team_name)}</strong>
+            </span>
             ${statusBadge}
           </div>
         </td>
@@ -1005,6 +1400,13 @@ function renderStandingsTableRows(standings, leagueCode) {
  tbody.innerHTML = rowsHtml.join('');
   if (typeof window.refreshFavoriteStarsAndSorting === 'function') window.refreshFavoriteStarsAndSorting();
 }
+window.switchStandingsMobileTab = function(tab) {
+  const view = document.getElementById('standings-view');
+  if (view) view.classList.toggle('is-mobile-scorers', tab === 'scorers');
+  document.querySelectorAll('#standings-mobile-switch .dp-subtab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-smob') === tab);
+  });
+};  
 
 async function loadOfficialStandingsAndScorers(leagueCode, forceRefresh = false) {
   const reqToken = ++window._viewReqToken;
@@ -1043,6 +1445,7 @@ async function loadOfficialStandingsAndScorers(leagueCode, forceRefresh = false)
     const scorers = scData.scorers || (Array.isArray(scData) ? scData : []);
 
     window._cachedStandingsData = standings;
+    window._cachedStandingsLeague = leagueCode;
     renderStandingsTableRows(standings, leagueCode);
 
     if (scorersList) {
@@ -1129,12 +1532,12 @@ let filterWrap = document.getElementById('proj-group-filter-bar');
     if (row.group_name && row.group_name !== lastGroup) {
       lastGroup = row.group_name;
       const ruleSub = getGroupRuleSubtitle(leagueCode, row.group_name, row.level_code);
-      rowsHtml.push(`
+     rowsHtml.push(`
         <tr class="group-divider-row">
-          <td colspan="8" style="background:linear-gradient(90deg, rgba(0,230,118,0.14) 0%, rgba(0,210,255,0.08) 50%, rgba(13,20,36,0.95) 100%); border-top:2px solid var(--accent-green); border-bottom:1px solid var(--card-border); padding:10px 14px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-              <span style="font-weight:900; font-size:0.92rem; color:var(--accent-green);">📌 ${row.group_name}</span>
-              ${ruleSub ? `<span style="font-size:0.74rem; color:#cbd5e1; font-weight:700; background:rgba(5,8,17,0.65); padding:3px 10px; border-radius:12px; border:1px solid #1e293b;">${ruleSub}</span>` : ''}
+          <td colspan="8" class="dp-group-divider-cell">
+            <div class="dp-group-divider-wrap">
+              <span class="dp-group-divider-title">${escapeHtml(row.group_name)}</span>
+              ${ruleSub ? `<span class="dp-group-divider-sub">${escapeHtml(ruleSub)}</span>` : ''}
             </div>
           </td>
         </tr>
@@ -1157,7 +1560,7 @@ let filterWrap = document.getElementById('proj-group-filter-bar');
           </div>
         </td>
      <td>${row.played}</td>
-        <td style="font-weight:800; color:#e2e8f0;">${row.current_pts}</td>
+        <td style="font-weight:800; color:var(--text);">${row.current_pts}</td>
         <td style="font-weight:900; font-size:1.02rem; color:var(--accent-green);">${row.projected_pts}</td>
         <td>
           ${row.champ_pct > 0.1 
@@ -1256,17 +1659,17 @@ const CARDS_CONTINENTS_META = [
 ];
 
 const CARDS_LEAGUES_BAR = [
-  { code: 'PD',  label: '🇪🇸 الدوري الإسباني' },
-  { code: 'PL',  label: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 الدوري الإنجليزي' },
-  { code: 'SA',  label: '🇮🇹 الدوري الإيطالي' },
-  { code: 'BL1', label: '🇩🇪 الدوري الألماني' },
-  { code: 'FL1', label: '🇫🇷 الدوري الفرنسي' },
-  { code: 'UCL', label: '🏆 أبطال أوروبا' },
-  { code: 'ACL', label: '🌏 نخبة آسيا' },
-  { code: 'CAF', label: '🌍 أبطال أفريقيا' },
-  { code: 'DED', label: '🇳🇱 الدوري الهولندي' },
-  { code: 'PPL', label: '🇵🇹 الدوري البرتغالي' },
-  { code: 'TSL', label: '🇹🇷 الدوري التركي' }
+  { code: 'PD',  flag: '🇪🇸', name: 'الدوري الإسباني',  label: '🇪🇸 الدوري الإسباني' },
+  { code: 'PL',  flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', name: 'الدوري الإنجليزي', label: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 الدوري الإنجليزي' },
+  { code: 'SA',  flag: '🇮🇹', name: 'الدوري الإيطالي',  label: '🇮🇹 الدوري الإيطالي' },
+  { code: 'BL1', flag: '🇩🇪', name: 'الدوري الألماني',  label: '🇩🇪 الدوري الألماني' },
+  { code: 'FL1', flag: '🇫🇷', name: 'الدوري الفرنسي',  label: '🇫🇷 الدوري الفرنسي' },
+  { code: 'UCL', flag: '🏆', name: 'أبطال أوروبا',     label: '🏆 أبطال أوروبا' },
+  { code: 'ACL', flag: '🌏', name: 'نخبة آسيا',        label: '🌏 نخبة آسيا' },
+  { code: 'CAF', flag: '🌍', name: 'أبطال أفريقيا',    label: '🌍 أبطال أفريقيا' },
+  { code: 'DED', flag: '🇳🇱', name: 'الدوري الهولندي',  label: '🇳🇱 الدوري الهولندي' },
+  { code: 'PPL', flag: '🇵🇹', name: 'الدوري البرتغالي', label: '🇵🇹 الدوري البرتغالي' },
+  { code: 'TSL', flag: '🇹🇷', name: 'الدوري التركي',    label: '🇹🇷 الدوري التركي' }
 ];
 
 function injectCardsHubCustomStyles() {
@@ -1413,10 +1816,11 @@ function renderCardsHubSkeleton() {
       <div style="margin-bottom:8px; font-size:0.82rem; font-weight:900; color:var(--accent-gold);">
         🏟️ اختر الدوري لاستعراض أنديته وسجلات بطولاته التاريخية:
       </div>
-      <div class="mercato-chips-group" style="margin-bottom:12px;">
+     <div class="mercato-chips-group" style="margin-bottom:12px;">
         ${CARDS_LEAGUES_BAR.map(lg => `
           <button class="mercato-region-chip ${st.clubLeague === lg.code ? 'active' : ''}" onclick="selectCardsLeagueFilter('${lg.code}')">
-            ${lg.label}
+            ${typeof renderLeagueLogoHtml === 'function' ? renderLeagueLogoHtml(lg.code, lg.flag, 'size-xs') : lg.flag}
+            <span>${lg.name}</span>
           </button>
         `).join('')}
       </div>
@@ -1450,7 +1854,8 @@ function renderCardsHubSkeleton() {
       <div class="mercato-chips-group">
         ${CARDS_LEAGUES_BAR.map(lg => `
           <button class="mercato-region-chip ${st.playerLeague === lg.code ? 'active' : ''}" onclick="selectCardsLeagueFilter('${lg.code}')">
-            ${lg.label}
+            ${typeof renderLeagueLogoHtml === 'function' ? renderLeagueLogoHtml(lg.code, lg.flag, 'size-xs') : lg.flag}
+            <span>${lg.name}</span>
           </button>
         `).join('')}
       </div>
@@ -1533,26 +1938,24 @@ function renderCardsGridItems() {
       <div class="sleek-nation-card" onclick="openNationCardByIdx(${idx})">
         <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
           <div style="display:flex; align-items:center; gap:12px; min-width:0;">
-            <div class="entity-crest-box" style="width:60px; height:60px; border-radius:16px; overflow:hidden; padding:4px; background:#060a14;">
-              <img src="${n.flag_url}" alt="${n.name}" style="width:100%; height:100%; object-fit:cover; border-radius:12px;" onerror="this.src='https://ui-avatars.com/api/?name=NT&background=0f172a&color=00d2ff&rounded=true'">
+            <div class="entity-crest-box" style="width:58px; height:58px; border-radius:14px; overflow:hidden; padding:4px;">
+              <img src="${escapeHtml(n.flag_url)}" alt="${escapeHtml(n.name)}" style="width:100%; height:100%; object-fit:cover; border-radius:10px;" onerror="this.src='https://ui-avatars.com/api/?name=NT&background=0f172a&color=00d2ff&rounded=true'">
             </div>
             <div style="min-width:0;">
-              <div style="font-size:1.12rem; font-weight:900; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${n.name}</div>
-              <div style="font-size:0.75rem; color:var(--accent-cyan); font-weight:800; margin-top:3px;">
-                🌍 الاتحاد: ${n.confederation}
-              </div>
+              <div style="font-size:1.06rem; font-weight:800; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(n.name)}</div>
+              <div style="font-size:0.75rem; color:var(--accent-cyan); font-weight:700; margin-top:2px;">الاتحاد: ${escapeHtml(n.confederation)}</div>
             </div>
           </div>
 
-          <div style="text-align:center; background:rgba(0, 230, 118, 0.12); border:1.5px solid var(--accent-green); border-radius:14px; padding:6px 12px; flex-shrink:0;">
-            <div style="font-size:0.64rem; color:#cbd5e1; font-weight:800;">تصنيف الفيفا</div>
-            <div style="font-size:1.2rem; font-weight:900; color:var(--accent-green); direction:ltr;">#${n.rank}</div>
+          <div style="text-align:center; background:var(--accent-green-soft); border:1px solid rgba(16,185,129,0.4); border-radius:12px; padding:5px 11px; flex-shrink:0;">
+            <div style="font-size:0.64rem; color:var(--muted); font-weight:700;">تصنيف الفيفا</div>
+            <div style="font-size:1.12rem; font-weight:900; color:var(--accent-green); direction:ltr;">#${escapeHtml(n.rank)}</div>
           </div>
         </div>
 
-        <div style="display:flex; justify-content:space-between; align-items:center; background:#060a14; border:1px solid #18253f; border-radius:12px; padding:9px 12px; font-size:0.76rem;">
-          <span style="color:var(--muted); font-weight:700;">⚡ نقاط الفيفا: <strong style="color:#fff;">${n.fifa_points}</strong></span>
-          <span style="color:var(--accent-gold); font-weight:900;">🏆 الألقاب والهداف التاريخي ⬅️</span>
+        <div style="display:flex; justify-content:space-between; align-items:center; background:var(--surface-inset); border:1px solid var(--card-border); border-radius:11px; padding:8px 12px; font-size:0.76rem;">
+          <span style="color:var(--muted); font-weight:700;">نقاط الفيفا: <strong style="color:var(--text);">${escapeHtml(n.fifa_points)}</strong></span>
+          <span style="color:var(--accent-gold-bright); font-weight:800;">الألقاب والسجل ↗</span>
         </div>
       </div>
     `).join('');
@@ -1576,26 +1979,27 @@ function renderCardsGridItems() {
       <div class="sleek-club-card" onclick="openClubCardByIdx(${idx})">
         <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
           <div style="display:flex; align-items:center; gap:12px; min-width:0;">
-            <div class="entity-crest-box" style="width:60px; height:60px;">
-              <img src="${c.crest}" alt="${c.name}" onerror="this.src='https://ui-avatars.com/api/?name=FC&background=1e293b&color=fff&rounded=true'">
+            <div class="entity-crest-box" style="width:58px; height:58px;">
+              <img src="${escapeHtml(c.crest)}" alt="${escapeHtml(c.name)}" onerror="this.src='https://ui-avatars.com/api/?name=FC&background=1e293b&color=fff&rounded=true'">
             </div>
             <div style="min-width:0;">
-              <div style="font-size:1.12rem; font-weight:900; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${c.name}</div>
-              <div style="font-size:0.75rem; color:var(--accent-gold); font-weight:800; margin-top:3px;">
-                ${c.league_flag || '⚽'} ${c.league_name}
+              <div style="font-size:1.06rem; font-weight:800; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(c.name)}</div>
+             <div class="dp-inline-league-tag" style="font-size:0.75rem; color:var(--accent-gold-bright); font-weight:700; margin-top:3px;">
+                ${typeof renderLeagueLogoHtml === 'function' ? renderLeagueLogoHtml(c.league_code, c.league_flag, 'size-xs') : (c.league_flag || '')}
+                <span>${escapeHtml(c.league_name)}</span>
               </div>
             </div>
           </div>
 
-          <div style="text-align:center; background:rgba(255, 214, 0, 0.12); border:1.5px solid var(--accent-gold); border-radius:14px; padding:6px 12px; flex-shrink:0;">
-            <div style="font-size:0.64rem; color:#cbd5e1; font-weight:800;">المركز الحالي</div>
-            <div style="font-size:1.15rem; font-weight:900; color:var(--accent-gold); direction:ltr;">#${c.rank}</div>
+          <div style="text-align:center; background:var(--accent-gold-soft); border:1px solid rgba(245,158,11,0.4); border-radius:12px; padding:5px 11px; flex-shrink:0;">
+            <div style="font-size:0.64rem; color:var(--muted); font-weight:700;">المركز</div>
+            <div style="font-size:1.12rem; font-weight:900; color:var(--accent-gold-bright); direction:ltr;">#${escapeHtml(c.rank)}</div>
           </div>
         </div>
 
-        <div style="display:flex; justify-content:space-between; align-items:center; background:#060a14; border:1px solid #18253f; border-radius:12px; padding:9px 12px; font-size:0.76rem;">
-          <span style="color:var(--muted); font-weight:700;">📊 النقاط: <strong style="color:var(--accent-green);">${c.points}</strong> (${c.played} جولة)</span>
-          <span style="color:var(--accent-cyan); font-weight:900;">🏆 خزانة الألقاب والأساطير ⬅️</span>
+        <div style="display:flex; justify-content:space-between; align-items:center; background:var(--surface-inset); border:1px solid var(--card-border); border-radius:11px; padding:8px 12px; font-size:0.76rem;">
+          <span style="color:var(--muted); font-weight:700;">النقاط: <strong style="color:var(--accent-green);">${escapeHtml(c.points)}</strong> (${escapeHtml(c.played)} جولة)</span>
+          <span style="color:var(--accent-cyan); font-weight:800;">خزانة الألقاب ↗</span>
         </div>
       </div>
     `).join('');
@@ -1817,8 +2221,8 @@ async function openEntityHistoryModal(entityType, encodedRawName, encodedArName,
           <div style="font-size:0.65rem; font-weight:800;">إجمالي البطولات</div>
           <div style="font-size:1.25rem; font-weight:900;">🏆 ${pf.total_trophies || 0}</div>
         </div>
-      </div>
-
+      </div> 
+      
       <!-- خزانة الألقاب التفصيلية -->
       <h4 style="font-size:0.92rem; color:var(--accent-gold); margin-bottom:10px;">🏛️ خزانة الألقاب والبطولات الرسمية:</h4>
       ${allHonoursHtml}
@@ -1838,8 +2242,8 @@ async function openEntityHistoryModal(entityType, encodedRawName, encodedArName,
           <span class="entity-rec-lbl">🛡️ الأكثر لعباً ومشاركة:</span>
           <span class="entity-rec-val" style="color:var(--accent-cyan); font-size:0.88rem;">${pf.most_apps || '-'}</span>
         </div>
-      </div>
-
+        </div>
+      ${entityType === 'club' && teamId ? '<div id="dp-club-recent-results-box" style="margin-bottom:14px;"></div>' : ''}
       <!-- نبذة موسوعية حية -->
       <div style="background:#070c18; border:1px solid var(--card-border); border-right:4px solid var(--accent-green); border-radius:12px; padding:12px 14px; font-size:0.82rem; line-height:1.7; color:#cbd5e1;">
         <div style="font-weight:900; color:var(--accent-green); margin-bottom:4px;">📖 نبذة تاريخية موثقة:</div>
@@ -1848,8 +2252,53 @@ async function openEntityHistoryModal(entityType, encodedRawName, encodedArName,
 
       ${squadJumpBtn}
     `;
+    if (entityType === 'club' && teamId && extraInfo) {
+      loadClubRecentMatchesIntoModal(extraInfo, teamId);
+    }
   } catch (e) {
     body.innerHTML = '<div class="loading-state" style="color:var(--accent-red);">تعذر جلب بيانات السجل التاريخي في هذه اللحظة.</div>';
+  }
+}
+
+async function loadClubRecentMatchesIntoModal(leagueCode, teamId) {
+  const box = document.getElementById('dp-club-recent-results-box');
+  if (!box) return;
+  box.innerHTML = '<div style="font-size:0.76rem; color:var(--muted); padding:6px 0;">جاري جلب آخر 5 نتائج رسمية للنادي...</div>';
+
+  try {
+    const res = await fetch(`/api/club_recent/${encodeURIComponent(leagueCode)}/${encodeURIComponent(teamId)}`);
+    const data = await res.json();
+    const list = (data && Array.isArray(data.matches)) ? data.matches : [];
+    if (list.length === 0) {
+      box.innerHTML = '';
+      return;
+    }
+
+    box.innerHTML = `
+      <h4 style="font-size:0.88rem; color:var(--accent-green); margin-bottom:8px;">آخر 5 مباريات رسمية (النتائج الحقيقية)</h4>
+      <div style="display:flex; flex-direction:column; gap:6px;">
+        ${list.map(m => {
+          const badgeCls = m.result === 'W' ? 'form-w' : (m.result === 'L' ? 'form-l' : 'form-d');
+          return `
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; background:var(--surface-inset); border:1px solid var(--card-border); border-radius:10px; padding:7px 11px; font-size:0.78rem;">
+              <div style="display:flex; align-items:center; gap:8px; min-width:0;">
+                <span class="badge-f ${badgeCls}">${escapeHtml(m.result)}</span>
+                ${m.opponent_crest ? `<img src="${escapeHtml(m.opponent_crest)}" width="18" height="18" style="object-fit:contain;" onerror="this.style.display='none'">` : ''}
+                <span style="font-weight:700; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                  ${m.is_home ? 'ضد' : 'خارج الأرض أمام'} ${escapeHtml(m.opponent)}
+                </span>
+              </div>
+              <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
+                <strong style="color:var(--accent-gold-bright); direction:ltr;">${escapeHtml(m.score)}</strong>
+                <span style="color:var(--muted); font-size:0.7rem;">${escapeHtml(m.date)}</span>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  } catch (e) {
+    box.innerHTML = '';
   }
 }
 
@@ -1984,7 +2433,7 @@ async function loadNewsFeed(forceRefresh = false) {
         <div class="news-card-content">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
             <span style="font-size:0.72rem; color:var(--muted);">🕒 ${escapeHtml(item.published_time || 'حديثاً')}</span>
-            <span class="hub-badge" style="color:var(--accent-gold); border-color:var(--accent-gold); font-size:0.65rem;">#${idx + 1}</span>
+<span class="hub-badge" style="color:var(--accent-gold-bright); font-size:0.68rem;">${escapeHtml(item.source || 'أخبار عالمية')}</span>
           </div>
           <h3 class="news-card-title">${escapeHtml(item.title)}</h3>
           <p class="news-card-desc">${escapeHtml(item.summary || 'انقر لقراءة التقرير والتفاصيل الكاملة...')}</p>
@@ -1999,9 +2448,28 @@ async function loadNewsFeed(forceRefresh = false) {
   }
 }
 
+window._activeNewsArticle = null;
+
+window.shareCurrentNewsArticle = async function() {
+  const item = window._activeNewsArticle;
+  if (!item) return;
+  const shareText = `📰 ${item.title}\n${item.source_url || window.location.href}\nعبر DeepPitch Analytics Pro`;
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: item.title, text: item.title, url: item.source_url || window.location.href });
+      return;
+    } catch (e) {}
+  }
+  try {
+    await navigator.clipboard.writeText(shareText);
+    if (typeof window.showAppToast === 'function') window.showAppToast('تم نسخ رابط الخبر بنجاح');
+  } catch (e) {}
+};
+
 function openNewsArticle(idx) {
   const item = currentNewsItems[idx];
   if (!item) return;
+  window._activeNewsArticle = item;
 
   let modal = document.getElementById('news-reader-modal');
   // إنشاء النافذة ديناميكياً إذا لم تكن موجودة في ملف HTML
@@ -2069,13 +2537,22 @@ document.addEventListener('click', (e) => {
 // 8. محرك عرض الأرشيف التاريخي وموسوعة الدوريات الشاملة
 // =========================================================
 window._currentHistorySeasons = [];
+window._historySeasonsLimit = 15;
+window._historySearchQuery = '';
+
+window.expandHistorySeasons = function() {
+  window._historySeasonsLimit += 25;
+  filterHistorySeasons(window._historySearchQuery);
+};
 
 function filterHistorySeasons(query) {
   const tbody = document.getElementById('history-seasons-tbody');
   const countBadge = document.getElementById('history-filtered-count');
+  const moreWrap = document.getElementById('history-more-wrap');
   if (!tbody) return;
 
-  const q = (query || '').trim().toLowerCase();
+  window._historySearchQuery = query || '';
+  const q = window._historySearchQuery.trim().toLowerCase();
   const list = window._currentHistorySeasons || [];
   const filtered = q
     ? list.filter(s =>
@@ -2089,16 +2566,26 @@ function filterHistorySeasons(query) {
 
   if (countBadge) countBadge.innerText = `${filtered.length} نسخة`;
 
-  tbody.innerHTML = filtered.map(s => `
+  const visibleList = q ? filtered : filtered.slice(0, window._historySeasonsLimit);
+
+  tbody.innerHTML = visibleList.map(s => `
     <tr>
       <td style="color:var(--muted); font-size:0.75rem;">#${list.length - list.indexOf(s)}</td>
-      <td style="font-weight:900; color:var(--accent-cyan); white-space:nowrap;">${s.season}</td>
-      <td style="font-weight:900; color:var(--accent-gold); max-width:145px; overflow:hidden; text-overflow:ellipsis;">🏆 ${s.champion}</td>
-      <td style="font-size:0.8rem; color:#e2e8f0; max-width:130px; overflow:hidden; text-overflow:ellipsis;">${s.runner_up || '-'}</td>
-      <td style="font-size:0.75rem; color:#94a3b8; max-width:180px; overflow:hidden; text-overflow:ellipsis;" title="${(s.top4 || []).join(' • ')}">${(s.top4 || []).slice(0, 3).join(' • ')}</td>
-      <td style="font-size:0.78rem; color:#00e676; font-weight:700; max-width:160px; overflow:hidden; text-overflow:ellipsis;">${s.top_scorer || '-'}</td>
+      <td style="font-weight:900; color:var(--accent-cyan); white-space:nowrap;">${escapeHtml(s.season)}</td>
+      <td style="font-weight:900; color:var(--accent-gold); max-width:145px; overflow:hidden; text-overflow:ellipsis;">🏆 ${escapeHtml(s.champion)}</td>
+      <td style="font-size:0.8rem; color:var(--text-secondary); max-width:130px; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(s.runner_up || '-')}</td>
+      <td style="font-size:0.75rem; color:var(--muted); max-width:180px; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml((s.top4 || []).join(' • '))}">${escapeHtml((s.top4 || []).slice(0, 3).join(' • '))}</td>
+      <td style="font-size:0.78rem; color:var(--accent-green); font-weight:700; max-width:160px; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(s.top_scorer || '-')}</td>
     </tr>
   `).join('');
+
+  if (moreWrap) {
+    if (!q && filtered.length > visibleList.length) {
+      moreWrap.innerHTML = `<button type="button" class="retry-btn" onclick="expandHistorySeasons()" style="width:100%; margin-top:10px; justify-content:center;">عرض المزيد من النسخ (${visibleList.length} من ${filtered.length}) ▼</button>`;
+    } else {
+      moreWrap.innerHTML = '';
+    }
+  }
 }
 
 async function loadLeagueHistory(leagueCode, forceRefresh = false) {
@@ -2106,7 +2593,7 @@ async function loadLeagueHistory(leagueCode, forceRefresh = false) {
   if (!container) return;
   const reqToken = ++window._viewReqToken;
 
-  container.innerHTML = '<div class="loading-state">⏳ جاري سحب السجل التاريخي الكامل لجميع النسخ منذ التأسيس عبر الـ API...</div>';
+  container.innerHTML = renderSkeletonCardsHtml(4);
 
   try {
     const res = await fetch(`/api/league_history/${leagueCode}?refresh=${forceRefresh}`);
@@ -2115,7 +2602,7 @@ async function loadLeagueHistory(leagueCode, forceRefresh = false) {
 
     if (!resData || resData.status !== 'success' || !resData.data) {
       const msg = (resData && resData.message) ? resData.message : 'لا تتوفر سجلات تاريخية حالياً.';
-      container.innerHTML = `<div class="loading-state" style="color:var(--accent-red);">${msg}</div>`;
+      container.innerHTML = `<div class="dp-empty-state">${escapeHtml(msg)}</div>`;
       return;
     }
 
@@ -2124,95 +2611,73 @@ async function loadLeagueHistory(leagueCode, forceRefresh = false) {
     const titles = d.titles_table || [];
     const seasons = d.seasons || [];
     window._currentHistorySeasons = seasons;
+    window._historySeasonsLimit = 15;
+    window._historySearchQuery = '';
+
+    const recordItems = [
+      { lbl: 'الهداف التاريخي للبطولة', val: rec.top_scorer, cls: '' },
+      { lbl: 'الأكثر صناعة للأهداف', val: rec.most_assists, cls: 'accent-cyan' },
+      { lbl: 'الأكثر مشاركة (عميد اللاعبين)', val: rec.most_apps, cls: 'accent-gold' },
+      { lbl: 'الأكثر حفاظاً على نظافة الشباك', val: rec.most_clean_sheets, cls: 'accent-cyan' },
+      { lbl: 'هداف موسم واحد (رقم قياسي)', val: rec.single_season_scorer, cls: 'accent-gold' },
+      { lbl: 'أعلى رصيد نقطي في موسم واحد', val: rec.record_pts_season, cls: 'accent-gold' },
+      { lbl: 'أقوى هجوم لفريق في موسم', val: rec.team_goals_season, cls: '' },
+      { lbl: 'أطول سلسلة لاهزيمة تاريخياً', val: rec.unbeaten_streak, cls: '' },
+      { lbl: 'أكبر فوز في تاريخ المسابقة', val: rec.biggest_win, cls: 'accent-red' },
+      { lbl: 'المدرب الأكثر تتويجاً', val: rec.top_manager, cls: 'accent-cyan' },
+      { lbl: 'الأكثر تلقياً للبطاقات الصفراء', val: rec.most_yellows, cls: 'accent-gold' },
+      { lbl: 'الأكثر تلقياً للبطاقات الحمراء', val: rec.most_reds, cls: 'accent-red' }
+    ];
 
     container.innerHTML = `
-      <div style="max-width:1280px; margin:0 auto; background:var(--card); border:1px solid var(--card-border); border-radius:16px; padding:20px; margin-bottom:24px; box-shadow:0 8px 24px rgba(0,0,0,0.3);">
-        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--card-border); padding-bottom:14px; margin-bottom:18px; flex-wrap:wrap; gap:10px;">
+      <div class="dp-history-shell">
+        <div class="dp-history-hdr">
           <div>
-            <h2 style="font-size:1.35rem; color:var(--text); margin:0;">${d.flag} ${d.league_name}</h2>
-            <div style="font-size:0.82rem; color:var(--muted); margin-top:4px;">
-              تاريخ التأسيس: <strong style="color:#fff;">${d.founded}</strong> •
-              إجمالي النسخ المؤرشفة: <strong style="color:var(--accent-green);">${d.total_editions || seasons.length} نسخة تاريخية</strong> •
-              الأكثر تتويجاً: <strong style="color:var(--accent-gold);">${d.most_successful}</strong>
+            <h2 style="font-size:1.25rem; font-weight:800; color:var(--text); margin:0; display:flex; align-items:center; gap:10px;">
+              ${typeof renderLeagueLogoHtml === 'function' ? renderLeagueLogoHtml(leagueCode, d.flag, 'size-lg') : (d.flag || '')}
+              <span>${escapeHtml(d.league_name)}</span>
+            </h2>
+            <div style="font-size:0.8rem; color:var(--muted); margin-top:4px;">
+              التأسيس: <strong style="color:var(--text-secondary);">${escapeHtml(d.founded)}</strong> •
+              النسخ المؤرشفة: <strong style="color:var(--accent-green);">${d.total_editions || seasons.length} نسخة</strong> •
+              الأكثر تتويجاً: <strong style="color:var(--accent-gold-bright);">${escapeHtml(d.most_successful)}</strong>
             </div>
           </div>
-          <span class="hub-badge" style="color:var(--accent-gold); border-color:var(--accent-gold); font-size:0.8rem;">الموسوعة الرسمية الكاملة 🏛️</span>
+          <span class="hub-badge">الموسوعة الرسمية</span>
         </div>
 
-        <h4 style="font-size:0.98rem; color:var(--accent-cyan); margin-bottom:12px;">🌟 الأرقام القياسية وأساطير البطولة عبر التاريخ</h4>
+        <h4 style="font-size:0.92rem; color:var(--text); margin-bottom:10px; font-weight:800;">الأرقام القياسية عبر التاريخ</h4>
         <div class="history-records-scroll">
-          <div style="background:#0c121e; border:1px solid var(--card-border); border-right:4px solid #00e676; border-radius:10px; padding:10px 14px;">
-            <div style="font-size:0.74rem; color:var(--muted);">⚽ الهداف التاريخي للبطولة</div>
-            <div style="font-weight:900; font-size:0.9rem; color:#fff; margin-top:4px;">${rec.top_scorer || '-'}</div>
-          </div>
-          <div style="background:#0c121e; border:1px solid var(--card-border); border-right:4px solid #00d2ff; border-radius:10px; padding:10px 14px;">
-            <div style="font-size:0.74rem; color:var(--muted);">🎯 الأكثر صناعة للأهداف تاريخياً</div>
-            <div style="font-weight:900; font-size:0.9rem; color:#fff; margin-top:4px;">${rec.most_assists || '-'}</div>
-          </div>
-          <div style="background:#0c121e; border:1px solid var(--card-border); border-right:4px solid #ffd600; border-radius:10px; padding:10px 14px;">
-            <div style="font-size:0.74rem; color:var(--muted);">🛡️ عميد المشاركات (الأكثر لعباً)</div>
-            <div style="font-weight:900; font-size:0.9rem; color:#fff; margin-top:4px;">${rec.most_apps || '-'}</div>
-          </div>
-          <div style="background:#0c121e; border:1px solid var(--card-border); border-right:4px solid #38bdf8; border-radius:10px; padding:10px 14px;">
-            <div style="font-size:0.74rem; color:var(--muted);">🧤 الأكثر حفاظاً على نظافة الشباك</div>
-            <div style="font-weight:900; font-size:0.9rem; color:#fff; margin-top:4px;">${rec.most_clean_sheets || '-'}</div>
-          </div>
-          <div style="background:#0c121e; border:1px solid var(--card-border); border-right:4px solid #facc15; border-radius:10px; padding:10px 14px;">
-            <div style="font-size:0.74rem; color:var(--muted);">🟨 الأكثر تلقياً للبطاقات الصفراء</div>
-            <div style="font-weight:900; font-size:0.9rem; color:#fff; margin-top:4px;">${rec.most_yellows || '-'}</div>
-          </div>
-          <div style="background:#0c121e; border:1px solid var(--card-border); border-right:4px solid #ff5252; border-radius:10px; padding:10px 14px;">
-            <div style="font-size:0.74rem; color:var(--muted);">🟥 الأكثر تلقياً للبطاقات الحمراء</div>
-            <div style="font-weight:900; font-size:0.9rem; color:#fff; margin-top:4px;">${rec.most_reds || '-'}</div>
-          </div>
-          <div style="background:#0c121e; border:1px solid var(--card-border); border-right:4px solid #a855f7; border-radius:10px; padding:10px 14px;">
-            <div style="font-size:0.74rem; color:var(--muted);">🔥 هداف موسم واحد (رقم قياسي)</div>
-            <div style="font-weight:900; font-size:0.9rem; color:#fff; margin-top:4px;">${rec.single_season_scorer || '-'}</div>
-          </div>
-          <div style="background:#0c121e; border:1px solid var(--card-border); border-right:4px solid #ec4899; border-radius:10px; padding:10px 14px;">
-            <div style="font-size:0.74rem; color:var(--muted);">🚀 أقوى هجوم لفريق في موسم واحد</div>
-            <div style="font-weight:900; font-size:0.9rem; color:#fff; margin-top:4px;">${rec.team_goals_season || '-'}</div>
-          </div>
-          <div style="background:#0c121e; border:1px solid var(--card-border); border-right:4px solid #10b981; border-radius:10px; padding:10px 14px;">
-            <div style="font-size:0.74rem; color:var(--muted);">🧱 أطول سلسلة لاهزيمة تاريخياً</div>
-            <div style="font-weight:900; font-size:0.9rem; color:#fff; margin-top:4px;">${rec.unbeaten_streak || '-'}</div>
-          </div>
-          <div style="background:#0c121e; border:1px solid var(--card-border); border-right:4px solid #f97316; border-radius:10px; padding:10px 14px;">
-            <div style="font-size:0.74rem; color:var(--muted);">💥 أكبر فوز في تاريخ المسابقة</div>
-            <div style="font-weight:900; font-size:0.9rem; color:#fff; margin-top:4px;">${rec.biggest_win || '-'}</div>
-          </div>
-          <div style="background:#0c121e; border:1px solid var(--card-border); border-right:4px solid #06b6d4; border-radius:10px; padding:10px 14px;">
-            <div style="font-size:0.74rem; color:var(--muted);">🧠 المدرب الأكثر تتويجاً باللقب</div>
-            <div style="font-weight:900; font-size:0.9rem; color:#fff; margin-top:4px;">${rec.top_manager || '-'}</div>
-          </div>
-          <div style="background:#0c121e; border:1px solid var(--card-border); border-right:4px solid var(--accent-gold); border-radius:10px; padding:10px 14px;">
-            <div style="font-size:0.74rem; color:var(--muted);">⚡ أعلى رصيد نقطي في موسم واحد</div>
-            <div style="font-weight:900; font-size:0.9rem; color:var(--accent-gold); margin-top:4px;">${rec.record_pts_season || '-'}</div>
-          </div>
+          ${recordItems.map(r => `
+            <div class="dp-history-rec-card ${r.cls}">
+              <div class="dp-history-rec-lbl">${r.lbl}</div>
+              <div class="dp-history-rec-val">${escapeHtml(r.val || '-')}</div>
+            </div>
+          `).join('')}
         </div>
 
-       <div class="history-tables-split">
+        <div class="history-tables-split">
           <div class="data-card" style="margin:0;">
-            <h4 style="font-size:0.95rem; color:var(--accent-gold); margin-bottom:12px;">🏆 السجل الذهبي للأندية المتوجة (${titles.length} نادٍ)</h4>
-            <div class="table-container" style="max-height:540px; overflow-y:auto;">
+            <h4 style="font-size:0.92rem; color:var(--accent-gold-bright); margin-bottom:12px;">السجل الذهبي للأندية المتوجة (${titles.length})</h4>
+            class="table-container"
               <table class="styled-table">
                 <thead>
                   <tr>
                     <th>#</th>
                     <th>النادي</th>
-                    <th style="text-align:center;">الألقاب 🥇</th>
-                    <th style="text-align:center;">الوصيف 🥈</th>
+                    <th style="text-align:center;">الألقاب</th>
+                    <th style="text-align:center;">الوصيف</th>
                     <th style="text-align:center;">آخر لقب</th>
                   </tr>
                 </thead>
                 <tbody>
                   ${titles.map((t, idx) => `
                     <tr>
-                      <td style="color:var(--muted); font-weight:700;">${idx + 1}</td>
-                      <td style="font-weight:800; color:#fff;">${t.club}</td>
-                      <td style="text-align:center; font-weight:900; color:var(--accent-gold); font-size:1.08rem;">${t.titles}</td>
+                      <td style="color:var(--muted);">${idx + 1}</td>
+                      <td style="font-weight:800;">${escapeHtml(t.club)}</td>
+                      <td style="text-align:center; font-weight:900; color:var(--accent-gold-bright);">${t.titles}</td>
                       <td style="text-align:center; color:var(--muted);">${t.runner_up}</td>
-                      <td style="text-align:center; font-size:0.78rem; color:var(--accent-cyan);">${t.last_title || '-'}</td>
+                      <td style="text-align:center; font-size:0.78rem; color:var(--accent-cyan);">${escapeHtml(t.last_title || '-')}</td>
                     </tr>
                   `).join('')}
                 </tbody>
@@ -2222,31 +2687,33 @@ async function loadLeagueHistory(leagueCode, forceRefresh = false) {
 
           <div class="data-card" style="margin:0;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
-              <h4 style="font-size:0.95rem; color:var(--accent-green); margin:0;">
-                📜 سجل جميع النسخ منذ التأسيس (<span id="history-filtered-count">${seasons.length} نسخة</span>)
+              <h4 style="font-size:0.92rem; color:var(--accent-green); margin:0;">
+                سجل جميع النسخ (<span id="history-filtered-count">${seasons.length} نسخة</span>)
               </h4>
               <input
                 type="text"
-                placeholder="🔍 ابحث بالسنة، البطل، أو الهداف..."
+                class="mercato-search-input"
+                style="min-width:210px; padding:6px 12px; font-size:0.78rem;"
+                placeholder="ابحث بالسنة، البطل، أو الهداف..."
                 oninput="filterHistorySeasons(this.value)"
-                style="background:#090e18; color:#fff; border:1px solid var(--card-border); border-radius:8px; padding:6px 12px; font-family:'Cairo', sans-serif; font-size:0.8rem; width:240px;"
               >
             </div>
-            <div class="table-container" style="max-height:540px; overflow-y:auto;">
+            <div class="table-container">
               <table class="styled-table">
                 <thead>
                   <tr>
-                    <th>نسخة</th>
+                    <th>#</th>
                     <th>الموسم</th>
-                    <th>البطل 🥇</th>
-                    <th>الوصيف 🥈</th>
-                    <th>أوائل الترتيب / المربع الذهبي 🇪🇺</th>
-                    <th>هداف النسخة ⚽</th>
+                    <th>البطل</th>
+                    <th>الوصيف</th>
+                    <th>أوائل الترتيب</th>
+                    <th>هداف النسخة</th>
                   </tr>
                 </thead>
                 <tbody id="history-seasons-tbody"></tbody>
               </table>
             </div>
+            <div id="history-more-wrap"></div>
           </div>
         </div>
       </div>
@@ -2254,7 +2721,7 @@ async function loadLeagueHistory(leagueCode, forceRefresh = false) {
 
     filterHistorySeasons('');
   } catch (err) {
-    container.innerHTML = '<div class="loading-state" style="color:var(--accent-red);">تعذر تحميل السجلات التاريخية حالياً.</div>';
+    container.innerHTML = '<div class="dp-empty-state" style="color:var(--accent-red);">تعذر تحميل السجلات التاريخية حالياً.</div>';
   }
 }
 
@@ -2426,15 +2893,15 @@ async function applyRadarPreset(lgA, tmA, lgB, tmB) {
 
 function buildRadarSvgChart(teamA, teamB) {
   const axes = [
-    { key: 'attack', label: 'الهجوم ⚔️' },
-    { key: 'finishing', label: 'الحسم 🎯' },
-    { key: 'form', label: 'الفورمة 🔥' },
-    { key: 'dominance', label: 'الهيمنة 👑' },
-    { key: 'defense', label: 'الدفاع 🛡️' },
-    { key: 'elo', label: 'القوة Elo ⚡' }
+    { key: 'attack', label: 'الهجوم' },
+    { key: 'finishing', label: 'الحسم' },
+    { key: 'form', label: 'الفورمة' },
+    { key: 'dominance', label: 'الهيمنة' },
+    { key: 'defense', label: 'الدفاع' },
+    { key: 'elo', label: 'القوة Elo' }
   ];
 
-  const cx = 210, cy = 175, maxR = 115;
+  const cx = 220, cy = 170, maxR = 104;
   const levels = [0.25, 0.5, 0.75, 1.0];
 
   const getPoint = (idx, ratio) => {
@@ -2454,16 +2921,16 @@ function buildRadarSvgChart(teamA, teamB) {
 
   const axisLinesAndLabels = axes.map((ax, i) => {
     const endP = getPoint(i, 1.0);
-    const lblP = getPoint(i, 1.27);
+    const lblP = getPoint(i, 1.28);
     const valA = teamA.radar[ax.key] || 50;
     const valB = teamB.radar[ax.key] || 50;
     return `
       <line x1="${cx}" y1="${cy}" x2="${endP.x}" y2="${endP.y}" stroke="#1e2d4a" stroke-width="1" />
-      <text x="${lblP.x}" y="${lblP.y}" fill="#e2e8f0" font-size="11.5" font-weight="800" text-anchor="middle" dominant-baseline="middle">
+      <text x="${lblP.x}" y="${lblP.y}" fill="#e2e8f0" font-size="13" font-weight="800" text-anchor="middle" dominant-baseline="middle">
         ${ax.label}
       </text>
-      <text x="${lblP.x}" y="${parseFloat(lblP.y) + 14}" fill="#8292b0" font-size="10" font-weight="700" text-anchor="middle">
-        (${valA} - ${valB})
+      <text x="${lblP.x}" y="${parseFloat(lblP.y) + 15}" fill="#8292b0" font-size="10.5" font-weight="700" text-anchor="middle">
+        ${valA} - ${valB}
       </text>
     `;
   }).join('');
@@ -2493,7 +2960,7 @@ function buildRadarSvgChart(teamA, teamB) {
   }).join('');
 
   return `
-    <svg viewBox="0 0 420 355" class="radar-svg-chart">
+    <svg viewBox="0 0 440 345" class="radar-svg-chart">
       <defs>
         <filter id="glowA" x="-20%" y="-20%" width="140%" height="140%">
           <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#00e676" flood-opacity="0.45"/>
@@ -2584,7 +3051,7 @@ async function triggerRadarClash() {
         <div class="radar-club-box">
           <img src="${a.crest}" alt="${a.short}" onerror="this.src='https://via.placeholder.com/64?text=FC'">
           <div class="radar-club-name" style="color:var(--accent-green);">${a.short}</div>
-          <div class="radar-club-sub">${a.league_flag} ${a.league_name} • المركز #${a.rank}</div>
+          <div class="radar-club-sub dp-inline-league-tag" style="justify-content:center;">${typeof renderLeagueLogoHtml === 'function' ? renderLeagueLogoHtml(window._radarState.leagueA, a.league_flag, 'size-xs') : a.league_flag} <span>${escapeHtml(a.league_name)} • #${a.rank}</span></div>
           <div class="radar-overall-pill" style="border-color:var(--accent-green); color:var(--accent-green);">Overall: ${a.overall}</div>
         </div>
 
@@ -2604,12 +3071,12 @@ async function triggerRadarClash() {
         <div class="radar-club-box">
           <img src="${b.crest}" alt="${b.short}" onerror="this.src='https://via.placeholder.com/64?text=FC'">
           <div class="radar-club-name" style="color:var(--accent-cyan);">${b.short}</div>
-          <div class="radar-club-sub">${b.league_flag} ${b.league_name} • المركز #${b.rank}</div>
+          <div class="radar-club-sub dp-inline-league-tag" style="justify-content:center;">${typeof renderLeagueLogoHtml === 'function' ? renderLeagueLogoHtml(window._radarState.leagueB, b.league_flag, 'size-xs') : b.league_flag} <span>${escapeHtml(b.league_name)} • #${b.rank}</span></div>
           <div class="radar-overall-pill" style="border-color:var(--accent-cyan); color:var(--accent-cyan);">Overall: ${b.overall}</div>
         </div>
       </div>
 
-      <div style="background:#0c121e; padding:12px 16px; border-radius:12px; border:1px solid var(--card-border); margin-bottom:18px;">
+      <div style="background:var(--surface-inset); padding:12px 16px; border-radius:12px; border:1px solid var(--card-border); margin-bottom:18px;">
         <div class="prob-bar" style="height:12px;">
           <div class="prob-home" style="width:${sim.prob_a}%; background:var(--accent-green);"></div>
           <div class="prob-draw" style="width:${sim.prob_draw}%; background:var(--accent-gold);"></div>
@@ -2624,7 +3091,7 @@ async function triggerRadarClash() {
 
       <div class="radar-main-split">
         <div class="data-card" style="margin:0; text-align:center; display:flex; flex-direction:column; align-items:center; justify-content:center;">
-          <h4 style="font-size:0.95rem; color:var(--text); margin-bottom:6px;">🕸️ البصمة التكتيكية السداسية (Opta Spider Radar)</h4>
+          <h4 style="font-size:0.95rem; color:var(--text); margin-bottom:6px;">🕸️البصمة التكتيكية السداسية (DeepPitch Radar)</h4>
           <div style="display:flex; gap:16px; font-size:0.8rem; font-weight:800; margin-bottom:4px;">
             <span style="color:var(--accent-green);">🟢 ${a.short}</span>
             <span style="color:var(--accent-cyan);">🔵 ${b.short}</span>
@@ -2638,9 +3105,9 @@ async function triggerRadarClash() {
             ${barsHtml}
           </div>
 
-          <div style="background:#090e18; border-right:4px solid var(--accent-gold); padding:12px; border-radius:10px; margin-top:12px; font-size:0.83rem; line-height:1.6; color:#e2e8f0;">
-            <div style="font-weight:900; color:var(--accent-gold); margin-bottom:4px;">🧠 الخلاصة التكتيكية للمواجهة:</div>
-            <div>${sim.tactical_summary.replace(/\*\*(.*?)\*\*/g, '<strong style="color:#fff;">$1</strong>')}</div>
+          <div style="background:var(--surface-inset); border:1px solid var(--card-border); border-right:3.5px solid var(--accent-gold); padding:12px; border-radius:10px; margin-top:12px; font-size:0.83rem; line-height:1.6; color:var(--text-secondary);">
+            <div style="font-weight:800; color:var(--accent-gold-bright); margin-bottom:4px;">الخلاصة التكتيكية للمواجهة</div>
+            <div>${escapeHtml(sim.tactical_summary).replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--text);">$1</strong>')}</div>
           </div>
         </div>
       </div>
@@ -2794,7 +3261,7 @@ function switchMomentumSubTab(prefix, mode) {
 function renderMomentumWidgetHtml(prefix, data) {
   const waveSvg = buildMomentumWaveSvg(data.points, data.markers, data.home_team, data.away_team, data.is_projected);
   const shotSvg = buildShotMapPitchSvg(data.shots_map, data.home_team, data.away_team);
-  const badgeText = data.is_projected ? 'محاكاة تكتيكية 90د 🔮' : 'زخم مباشر Sofascore 📈';
+  const badgeText = data.is_projected ? 'محاكاة تكتيكية 90د' : 'تقدير الزخم الإحصائي';
 
   return `
     <div class="momentum-studio-box">
@@ -3311,8 +3778,8 @@ const votes = savedVotes[item.id] || window._mercatoState.votesMap[item.id] || {
         <span id="mercato-vote-pct" style="color:var(--accent-green);">${upPct}% يؤيدون الخطوة</span>
       </div>
       <div class="vote-btn-group">
-        <button class="mercato-vote-btn" onclick="voteMercatoItem('${item.id}', 'up', '${pageType}')">🔥 صفقة رابحة (${votes.up})</button>
-        <button class="mercato-vote-btn" onclick="voteMercatoItem('${item.id}', 'down', '${pageType}')">👎 غير موفقة (${votes.down})</button>
+        <button id="mercato-vote-up-btn" type="button" class="mercato-vote-btn ${votes.userVote === 'up' ? 'is-voted-up' : ''}" onclick="voteMercatoItem('${item.id}', 'up', '${pageType}')">🔥 صفقة رابحة (${votes.up})</button>
+        <button id="mercato-vote-down-btn" type="button" class="mercato-vote-btn ${votes.userVote === 'down' ? 'is-voted-down' : ''}" onclick="voteMercatoItem('${item.id}', 'down', '${pageType}')">👎 غير موفقة (${votes.down})</button>
       </div>
     </div>
   `;
@@ -3349,7 +3816,21 @@ function voteMercatoItem(itemId, dir, pageType) {
   window._mercatoState.votesMap[itemId] = entry;
   try { localStorage.setItem('deeppitch_mercato_votes_v1', JSON.stringify(saved)); } catch (e) {}
 
-  openMercatoDetailModal(pageType, itemId);
+const totalV = Math.max(1, entry.up + entry.down);
+  const upPct = Math.round((entry.up / totalV) * 100);
+  const pctEl = document.getElementById('mercato-vote-pct');
+  const upBtn = document.getElementById('mercato-vote-up-btn');
+  const downBtn = document.getElementById('mercato-vote-down-btn');
+
+  if (pctEl) pctEl.textContent = `${upPct}% يؤيدون الخطوة`;
+  if (upBtn) {
+    upBtn.textContent = `🔥 صفقة رابحة (${entry.up})`;
+    upBtn.classList.toggle('is-voted-up', entry.userVote === 'up');
+  }
+  if (downBtn) {
+    downBtn.textContent = `👎 غير موفقة (${entry.down})`;
+    downBtn.classList.toggle('is-voted-down', entry.userVote === 'down');
+  }
 }
 
 // =========================================================
@@ -3418,155 +3899,7 @@ const QUIZ_CATEGORIES_META = {
 };
 
 function injectQuizHorizontalScrollStyles() {
-  if (document.getElementById('deeppitch-quiz-v6-css')) return;
-  const stEl = document.createElement('style');
-  stEl.id = 'deeppitch-quiz-v6-css';
-  stEl.innerHTML = `
-    .quiz-h-strip {
-      display: flex !important;
-      flex-direction: row !important;
-      flex-wrap: nowrap !important;
-      align-items: center !important;
-      gap: 8px !important;
-      width: 100% !important;
-      overflow-x: auto !important;
-      overflow-y: hidden !important;
-      padding: 4px 2px 8px 2px !important;
-      margin-bottom: 8px !important;
-      -webkit-overflow-scrolling: touch !important;
-      scroll-snap-type: x mandatory !important;
-      scrollbar-width: thin !important;
-      scrollbar-color: rgba(0, 230, 118, 0.4) transparent !important;
-    }
-    .quiz-h-strip::-webkit-scrollbar { height: 4px !important; }
-    .quiz-h-strip::-webkit-scrollbar-thumb { background: rgba(0, 230, 118, 0.45) !important; border-radius: 10px !important; }
-
-    .q-chip-item {
-      flex: 0 0 auto !important;
-      scroll-snap-align: start !important;
-      background: #080e1c !important;
-      border: 1.5px solid #1d2d4d !important;
-      color: #cbd5e1 !important;
-      padding: 7px 14px !important;
-      border-radius: 99px !important;
-      font-size: 0.78rem !important;
-      font-weight: 800 !important;
-      cursor: pointer !important;
-      white-space: nowrap !important;
-      display: inline-flex !important;
-      align-items: center !important;
-      gap: 6px !important;
-      transition: all 0.2s ease !important;
-    }
-    .q-chip-item.active {
-      background: rgba(0, 230, 118, 0.16) !important;
-      border-color: #00e676 !important;
-      color: #00e676 !important;
-      box-shadow: 0 0 12px rgba(0, 230, 118, 0.2) !important;
-    }
-    .q-chip-item.active-cyan {
-      background: rgba(0, 210, 255, 0.16) !important;
-      border-color: #00d2ff !important;
-      color: #00d2ff !important;
-      box-shadow: 0 0 12px rgba(0, 210, 255, 0.2) !important;
-    }
-    .q-chip-item.active-gold {
-      background: rgba(255, 214, 0, 0.16) !important;
-      border-color: #ffd600 !important;
-      color: #ffd600 !important;
-      box-shadow: 0 0 12px rgba(255, 214, 0, 0.2) !important;
-    }
-
-    .q-cat-card-compact {
-      flex: 0 0 175px !important;
-      scroll-snap-align: start !important;
-      background: #080e1c !important;
-      border: 1.5px solid #1d2d4d !important;
-      border-radius: 14px !important;
-      padding: 9px 11px !important;
-      cursor: pointer !important;
-      display: flex !important;
-      align-items: center !important;
-      gap: 8px !important;
-      transition: all 0.2s ease !important;
-    }
-    .q-cat-card-compact.active {
-      background: linear-gradient(145deg, rgba(0, 210, 255, 0.18), #0b162c) !important;
-      border-color: #00d2ff !important;
-      box-shadow: 0 4px 14px rgba(0, 210, 255, 0.2) !important;
-    }
-
-    .quiz-options-grid {
-      display: grid !important;
-      grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-      gap: 10px !important;
-      margin-bottom: 12px !important;
-    }
-    .quiz-option-btn {
-      background: linear-gradient(145deg, #0d172b, #080e1c) !important;
-      border: 1.5px solid #223558 !important;
-      color: #fff !important;
-      padding: 12px 10px !important;
-      border-radius: 14px !important;
-      font-size: 0.85rem !important;
-      font-weight: 800 !important;
-      cursor: pointer !important;
-      display: flex !important;
-      align-items: center !important;
-      gap: 8px !important;
-      text-align: right !important;
-      min-height: 50px !important;
-      width: 100% !important;
-      transition: all 0.18s ease !important;
-    }
-    .quiz-option-btn.opt-correct {
-      background: rgba(0, 230, 118, 0.25) !important;
-      border-color: #00e676 !important;
-      color: #00e676 !important;
-      box-shadow: 0 0 16px rgba(0, 230, 118, 0.35) !important;
-    }
-    .quiz-option-btn.opt-wrong {
-      background: rgba(255, 82, 82, 0.25) !important;
-      border-color: #ff5252 !important;
-      color: #ff5252 !important;
-      box-shadow: 0 0 16px rgba(255, 82, 82, 0.35) !important;
-    }
-    .levelup-celebration-toast {
-      position: fixed !important;
-      top: 20px !important;
-      left: 50% !important;
-      transform: translateX(-50%) !important;
-      background: linear-gradient(135deg, #13264a, #070d1c) !important;
-      border: 2px solid #ffd600 !important;
-      border-radius: 16px !important;
-      padding: 12px 22px !important;
-      text-align: center !important;
-      z-index: 999999 !important;
-      box-shadow: 0 12px 35px rgba(255, 214, 0, 0.35) !important;
-    }
-    .quiz-review-list {
-      max-height: 280px;
-      overflow-y: auto;
-      text-align: right;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      margin: 12px 0 16px 0;
-      padding: 4px;
-    }
-    .quiz-review-item {
-      background: #070c18;
-      border: 1px solid #1b2a47;
-      border-right: 4px solid #00e676;
-      border-radius: 12px;
-      padding: 9px 12px;
-      font-size: 0.78rem;
-    }
-    .quiz-review-item.rev-wrong {
-      border-right-color: #ff5252;
-    }
-  `;
-  document.head.appendChild(stEl);
+  // جميع تنسيقات ساحة التحدي موحّدة رسمياً في ملف style.css لدعم الوضعين الليلي والنهاري
 }
 
 function saveQuizProfile() {
@@ -4400,9 +4733,9 @@ function redrawRankBadgesUI() {
       }
     } else {
       btn.classList.remove('rank-selected-btn');
-      if (bdg) {
+     if (bdg) {
         bdg.innerText = '?';
-        bdg.style.background = '#050811';
+        bdg.style.background = 'var(--card)';
         bdg.style.color = 'var(--accent-cyan)';
       }
     }
@@ -4576,7 +4909,7 @@ window.finishBlitzRound = function() {
     fb.style.display = 'block';
     fb.className = `quiz-feedback-box ${passed ? 'fb-correct' : 'fb-wrong'}`;
     fb.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+      <div class="dp-quiz-fb-layout">
         <div style="min-width:0;">
           <div style="font-size:0.84rem; font-weight:900; color:${passed ? 'var(--accent-green)' : 'var(--accent-red)'};">
             ${passed ? `✅ رائع! اكتشفت ${foundCount} أندية (+${foundCount} نقطة)` : '❌ لم تكتشف أي نادٍ في هذا التحدي!'}
@@ -4691,7 +5024,7 @@ function handleQuizTimeout() {
     fb.style.display = 'block';
     fb.className = 'quiz-feedback-box fb-wrong';
     fb.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+      <div class="dp-quiz-fb-layout">
         <div style="min-width:0;">
           <div style="color:var(--accent-red); font-weight:900; font-size:0.84rem;">⌛ انتهى الوقت! الصحيح: ${escapeHtml(q ? q.answer : '')}</div>
           ${st.gameMode === 'ai_bot' ? `<div style="font-size:0.72rem; color:var(--accent-cyan); font-weight:800; margin-top:2px;">${st.botLastAction}</div>` : ''}
@@ -4760,7 +5093,7 @@ function finalizeQuestionScoreAndFeedback(isCorrect, q, basePts, userChosenText 
     fb.style.display = 'block';
     fb.className = `quiz-feedback-box ${isCorrect ? 'fb-correct' : 'fb-wrong'}`;
     fb.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+     <div class="dp-quiz-fb-layout">
         <div style="min-width:0;">
           <div style="font-weight:900; font-size:0.86rem; color:${isCorrect ? 'var(--accent-green)' : 'var(--accent-red)'};">
             ${isCorrect ? `✅ إجابة صحيحة! (+${deltaPts} نقطة)${speedTag}` : `❌ إجابة خاطئة! الصحيح: ${escapeHtml(q.answer)}`}
@@ -4789,7 +5122,7 @@ window.nextQuizQuestion = function() {
 window.copyChallengeCodeToClipboard = function(codeStr) {
   try {
     navigator.clipboard.writeText(codeStr);
-    alert(`تم نسخ كود التحدي (${codeStr})!`);
+    window.showAppToast(`تم نسخ كود التحدي (${codeStr}) بنجاح`);
   } catch (e) {}
 };
 
@@ -4987,9 +5320,9 @@ function renderQuizPostMatchSummary() {
       });
     });
   }
-
-  function registerPWAEngine() {
-    if ('serviceWorker' in navigator) {
+function registerPWAEngine() {
+    if ('serviceWorker' in navigator && !window._dpSwRegistered) {
+      window._dpSwRegistered = true;
       navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
 
@@ -5016,11 +5349,12 @@ function renderQuizPostMatchSummary() {
   window.refreshFavoriteStarsAndSorting = function() {
     const favs = getFavoriteClubs();
 
-    // 1. إعادة رسم مباريات اليوم بتجميعها الجديد لتحديث مجموعة المفضلة فوراً
+  // 1. إعادة رسم مباريات اليوم مع الحفاظ على موضع التمرير بدون قفز
     if (window.activeSection === 'today' && Array.isArray(window.currentTodayMatches) && typeof renderTodayMatchesGrouped === 'function') {
+      const prevScrollY = window.scrollY;
       renderTodayMatchesGrouped(window.currentTodayMatches);
+      requestAnimationFrame(() => window.scrollTo({ top: prevScrollY, behavior: 'instant' }));
     }
-
     // 2. نجوم المفضلة في جدول الترتيب الرسمي
     document.querySelectorAll('#official-standings-tbody tr').forEach(tr => {
       const cells = tr.querySelectorAll('td');
@@ -5123,6 +5457,8 @@ function renderQuizPostMatchSummary() {
       if (window.innerWidth > 768) return;
       const sheet = e.target.closest('.modal-content');
       if (!sheet || sheet.scrollTop > 2) return;
+      const innerScroll = e.target.closest('.dp-mc-modal-body');
+      if (innerScroll && innerScroll.scrollTop > 2) return;
       activeSheet = sheet;
       startY = e.touches[0].clientY;
       deltaY = 0;

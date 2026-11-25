@@ -120,9 +120,15 @@ def load_persistent_cache_to_ram():
     except Exception:
         pass
 
+MAX_RAM_CACHE_ITEMS = 250
+
 def save_to_cache(cache_key, data):
     now = time.time()
     _RAM_CACHE[cache_key] = {"data": data, "time": now}
+    if len(_RAM_CACHE) > MAX_RAM_CACHE_ITEMS:
+        oldest_keys = sorted(_RAM_CACHE.keys(), key=lambda k: _RAM_CACHE[k]["time"])[:40]
+        for k in oldest_keys:
+            _RAM_CACHE.pop(k, None)
     try:
         payload_str = json.dumps(data, ensure_ascii=False)
         with _DB_LOCK:
@@ -826,91 +832,52 @@ def get_top_scorers(league_code, force_refresh=False):
     return cached_scorers if cached_scorers else []
 
 def background_warm_all_leagues():
-    try:
-        get_todays_matches()
-        get_gameweek_fixtures("PL")
-        get_gameweek_fixtures("PD")
-        sync_and_get_news(force_refresh=False)
-        get_mercato_and_contracts_data(force_refresh=False)
-    except Exception:
-        pass
+    """تسخين متوازٍ لأهم البطولات والمباريات والأخبار عند التشغيل + تحديث هادئ دوري"""
+    def _warm_cycle(first_run=False):
+        try:
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                tasks = [
+                    ex.submit(get_todays_matches),
+                    ex.submit(sync_and_get_news, False),
+                ]
+                if first_run:
+                    for lg in ("PL", "PD", "SA", "BL1", "UCL"):
+                        tasks.append(ex.submit(get_official_standings, lg))
+                    tasks.append(ex.submit(get_mercato_and_contracts_data, False))
+                for t in tasks:
+                    try:
+                        t.result()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    _warm_cycle(first_run=True)
+
+    # تحديث هادئ لمباريات اليوم في الخلفية كل 5 دقائق لتسريع الاستجابة للزوار
+    while True:
+        time.sleep(300)
+        _warm_cycle(first_run=False)
 
 # =========================================================================
 # 6. جدول مباريات اليوم + محرك القنوات الناقلة والمعلقين المعتمد
 # =========================================================================
-LEAGUE_BROADCAST_ROSTER = {
-    "PL": {
-        "top_channel": "beIN Sports HD 1",
-        "channels": ["beIN Sports HD 1", "beIN Sports HD 2"],
-        "top_commentators": ["عصام الشوالي", "حفيظ دراجي", "خليل البلوشي"],
-        "commentators": ["حسن العيدروس", "علي محمد علي", "عامر الخوذيري", "أحمد البلوشي"]
-    },
-    "PD": {
-        "top_channel": "beIN Sports HD 1",
-        "channels": ["beIN Sports HD 3", "beIN Sports HD 2"],
-        "top_commentators": ["حفيظ دراجي", "عصام الشوالي", "خليل البلوشي"],
-        "commentators": ["حسن العيدروس", "علي محمد علي", "أحمد البلوشي", "جواد بدة"]
-    },
-    "BL1": {
-        "top_channel": "beIN Sports HD 5",
-        "channels": ["beIN Sports HD 5", "beIN Sports HD 4"],
-        "top_commentators": ["أحمد البلوشي", "جواد بدة"],
-        "commentators": ["محمد بركات", "عامر الخوذيري", "عادل خلو"]
-    },
-    "SA": {
-        "top_channel": "AD Sports Premium 1",
-        "channels": ["AD Sports Premium 1", "AD Sports Premium 2"],
-        "top_commentators": ["فارس عوض", "عامر عبدالله"],
-        "commentators": ["بلال علام", "محمد الشامسي", "حازم عبدالسلام"]
-    },
-    "FL1": {
-        "top_channel": "beIN Sports HD 4",
-        "channels": ["beIN Sports HD 4", "beIN Sports HD 2"],
-        "top_commentators": ["جواد بدة", "حفيظ دراجي"],
-        "commentators": ["عامر الخوذيري", "نوفل باشي", "عادل خلو"]
-    },
-    "DED": {
-        "top_channel": "دبي الرياضية 1 HD",
-        "channels": ["دبي الرياضية 1 HD", "دبي الرياضية 2 HD"],
-        "top_commentators": ["رؤوف خليف", "عادل خلو"],
-        "commentators": ["عبدالله السعدي", "أحمد الشحي"]
-    },
-    "PPL": {
-        "top_channel": "SSC 1 HD",
-        "channels": ["SSC EXTRA 1 HD", "SSC EXTRA 2 HD"],
-        "top_commentators": ["فهد العتيبي", "عيسى الحربين"],
-        "commentators": ["مشاري القرني", "حماد العنزي", "عبدالله الحربي"]
-    },
-    "TSL": {
-        "top_channel": "beIN Sports HD Xtra 1",
-        "channels": ["beIN Sports HD Xtra 1", "beIN Sports HD Xtra 2"],
-        "top_commentators": ["أحمد فؤاد", "خالد الحدي"],
-        "commentators": ["محمد بركات", "باسم الزير"]
-    },
-    "UCL": {
-        "top_channel": "beIN Sports HD 1",
-        "channels": ["beIN Sports HD 1", "beIN Sports HD 2", "beIN Sports HD 3"],
-        "top_commentators": ["عصام الشوالي", "حفيظ دراجي", "خليل البلوشي"],
-        "commentators": ["حسن العيدروس", "علي محمد علي", "جواد بدة", "عامر الخوذيري"]
-    },
-    "ACL": {
-        "top_channel": "beIN Sports AFC HD / SSC 1 HD",
-        "channels": ["beIN Sports AFC 1 HD", "SSC 1 HD", "الكأس 9 HD"],
-        "top_commentators": ["فهد العتيبي", "فارس عوض", "عصام الشوالي"],
-        "commentators": ["خليل البلوشي", "عيسى الحربين", "عامر عبدالله", "حسن العيدروس"]
-    },
-    "CAF": {
-        "top_channel": "beIN Sports HD 6",
-        "channels": ["beIN Sports HD 6", "beIN Sports HD 5"],
-        "top_commentators": ["عصام الشوالي", "حفيظ دراجي", "علي محمد علي"],
-        "commentators": ["جواد بدة", "محمد مبروكي", "أحمد عبده"]
-    },
-    "UNL": {
-        "top_channel": "beIN Sports HD 1",
-        "channels": ["beIN Sports HD 1", "beIN Sports HD 2", "beIN Sports HD 3"],
-        "top_commentators": ["عصام الشوالي", "حفيظ دراجي", "خليل البلوشي"],
-        "commentators": ["حسن العيدروس", "علي محمد علي", "جواد بدة"]
-    }
+# =========================================================================
+# 6. محرك القنوات الناقلة والمعلقين الحقيقي (Zero Fake Hash + On-Demand Lookup)
+# =========================================================================
+LEAGUE_RIGHTS_NETWORK = {
+    "PL":  "شبكة beIN Sports",
+    "PD":  "شبكة beIN Sports",
+    "BL1": "شبكة beIN Sports",
+    "SA":  "STARZPLAY / AD Sports",
+    "FL1": "شبكة beIN Sports",
+    "DED": "غير محددة عربياً",
+    "PPL": "غير محددة عربياً",
+    "TSL": "شبكة beIN Sports",
+    "UCL": "شبكة beIN Sports",
+    "ACL": "beIN Sports AFC / SSC / الكأس",
+    "CAF": "شبكة beIN Sports",
+    "UNL": "شبكة beIN Sports"
 }
 
 ARABIC_MATCH_TEAM_ALIASES = {
@@ -933,10 +900,13 @@ ARABIC_MATCH_TEAM_ALIASES = {
     "bournemouth": ["بورنموث"],
     "wolves": ["وولفرهامبتون", "ولفرهامبتون"],
     "wolverhampton": ["وولفرهامبتون", "ولفرهامبتون"],
-    "nottingham": ["نوتنجهام", "نوتنغهام"],
+    "nottingham": ["نوتنجهام", "نوتنغهام", "نوتينجهام"],
     "leicester": ["ليستر"],
     "southampton": ["ساوثهامبتون"],
     "ipswich": ["ايبسويتش", "إبسويتش"],
+    "leeds": ["ليدز"],
+    "burnley": ["بيرنلي"],
+    "sunderland": ["سندرلاند"],
     "real madrid": ["ريال مدريد", "الريال"],
     "barcelona": ["برشلونة", "برشلونه"],
     "atletico": ["اتلتيكو مدريد", "أتلتيكو مدريد", "اتليتكو"],
@@ -953,6 +923,8 @@ ARABIC_MATCH_TEAM_ALIASES = {
     "getafe": ["خيتافي"],
     "rayo vallecano": ["رايو فاليكانو"],
     "espanyol": ["اسبانيول", "إسبانيول"],
+    "alaves": ["الافيس", "ألافيس"],
+    "las palmas": ["لاس بالماس"],
     "inter": ["انتر ميلان", "إنتر ميلان", "الانتر", "الإنتر"],
     "internazionale": ["انتر ميلان", "إنتر ميلان", "الانتر"],
     "milan": ["ميلان", "اي سي ميلان"],
@@ -966,27 +938,42 @@ ARABIC_MATCH_TEAM_ALIASES = {
     "fiorentina": ["فيورنتينا"],
     "bologna": ["بولونيا"],
     "torino": ["تورينو"],
+    "udinese": ["اودينيزي", "أودينيزي"],
+    "como": ["كومو"],
+    "genoa": ["جنوى"],
+    "parma": ["بارما"],
     "bayern": ["بايرن ميونخ", "بايرن ميونيخ", "البايرن"],
     "dortmund": ["بوروسيا دورتموند", "دورتموند"],
     "leverkusen": ["باير ليفركوزن", "ليفركوزن"],
     "leipzig": ["لايبزيج", "لايبزيغ"],
     "frankfurt": ["اينتراخت فرانكفورت", "فرانكفورت"],
     "stuttgart": ["شتوتغارت", "شتوتجارت"],
+    "freiburg": ["فرايبورغ", "فرايبورج"],
+    "wolfsburg": ["فولفسبورغ", "فولفسبورج"],
+    "werder bremen": ["فيردر بريمن", "بريمن"],
+    "monchengladbach": ["مونشنغلادباخ", "مونشنجلادباخ"],
     "psg": ["باريس سان جيرمان", "باريس"],
     "paris saint-germain": ["باريس سان جيرمان", "باريس"],
     "marseille": ["مارسيليا", "مرسيليا"],
     "monaco": ["موناكو"],
     "lyon": ["ليون"],
     "lille": ["ليل"],
+    "nice": ["نيس"],
+    "lens": ["لانس"],
+    "rennes": ["رين"],
+    "strasbourg": ["ستراسبورغ", "ستراسبورج"],
     "benfica": ["بنفيكا"],
     "porto": ["بورتو"],
     "sporting": ["سبورتينغ لشبونة", "سبورتنج لشبونة"],
+    "braga": ["براغا", "براجا"],
     "ajax": ["اياكس", "أياكس"],
     "psv": ["ايندهوفن", "آيندهوفن"],
     "feyenoord": ["فينورد", "فاينورد"],
+    "az alkmaar": ["الكماار", "ألكمار"],
     "galatasaray": ["غلطة سراي", "جالطة سراي", "غلطه سراي"],
     "fenerbahce": ["فنربخشة", "فنربخشه"],
     "besiktas": ["بشكتاش"],
+    "trabzonspor": ["طرابزون"],
     "al hilal": ["الهلال"], "al-hilal": ["الهلال"],
     "al nassr": ["النصر"], "al-nassr": ["النصر"],
     "al ahli": ["الأهلي السعودي", "اهلي جدة", "الأهلي"], "al-ahli": ["الأهلي السعودي", "اهلي جدة", "الأهلي"],
@@ -1009,8 +996,92 @@ KNOWN_ARABIC_COMMENTATORS = [
     "أحمد البلوشي", "جواد بدة", "محمد بركات", "عامر عبدالله", "بلال علام",
     "مدحت شلبي", "أيمن الكاشف", "علي سعيد الكعبي", "حازم عبدالسلام", "مشاري القرني",
     "حماد العنزي", "عبدالله الحربي", "سليمان الشريف", "راشد الدوسري", "أحمد الطيب",
-    "نوفل باشي", "باسم الزير", "عادل خلو", "أحمد فؤاد", "خالد الحدي", "محمد مبروكي"
+    "نوفل باشي", "باسم الزير", "عادل خلو", "أحمد فؤاد", "خالد الحدي", "محمد مبروكي",
+    "عبدالله الغامدي", "جعفر الصليح", "سالم السالمي", "أحمد عبده", "محمد حسين",
+    "سمير المعيرفي", "خالد المديفر", "فهد الدريبي", "طارق الأدور", "مؤمن حسن",
+    "محمد الكواليني", "عصام عبده", "ماجد الشجيع", "نور الدين أيت علي",
+    "مضر اليوسف", "سمير اليعقوبي", "منتصر الأزهري", "حاتم بطيشة", "يوسف سيف",
+    "خالد الغول", "سوار الذهب", "مهند الجالي", "أحمد المعمري", "أحمد الحامد",
+    "محمد الشامسي", "عبدالله السعدي", "عائد العصيمي", "راشد المهيري", "لحدان الفيحاني",
+    "أحمد النفيسة", "علي لفتة", "محمد السعدي", "مصطفى ناظم", "كريم الطرهوني"
 ]
+
+_COMMENTATOR_VARIANTS_MAP = {
+    "حفيظ الدراجي": "حفيظ دراجي",
+    "عامر الخذيري": "عامر الخوذيري",
+    "جواد بده": "جواد بدة",
+    "حسن عيدروس": "حسن العيدروس",
+    "علي الكعبي": "علي سعيد الكعبي",
+    "عبد الله الغامدي": "عبدالله الغامدي",
+    "عبد الله الحربي": "عبدالله الحربي",
+    "عامر عبد الله": "عامر عبدالله",
+}
+
+import unicodedata
+
+CHANNEL_REGEX = re.compile(
+    r"(beIN\s*Sports?\s*(?:HD|Premium|AFC|Xtra|Extra|Max|English|French)?\s*\d+(?:\s*HD)?"
+    r"|SSC\s*(?:EXTRA|NEWS|SPORT)?\s*\d+(?:\s*HD)?"
+    r"|AD\s*Sports?\s*(?:Premium)?\s*\d+(?:\s*HD)?"
+    r"|Al\s*Kass\s*\d+(?:\s*HD)?"
+    r"|STARZPLAY|Shahid\s*VIP|TOD"
+    r"|أبوظبي\s*الرياضية\s*(?:بريميوم|آسيا)?\s*\d*"
+    r"|الكأس\s*\d+\s*(?:HD)?"
+    r"|أون\s*تايم\s*سبورتس?\s*\d+"
+    r"|أون\s*سبورت\s*\d+"
+    r"|ب[يى]\s*[اإأ]ن\s*سبورتس?\s*(?:HD|إكسترا|آسيا|بريميوم)?\s*\d+(?:\s*HD)?"
+    r"|السعودية\s*الرياضية\s*\d*"
+    r"|ثمانية\s*\d*)",
+    re.IGNORECASE
+)
+
+_AR_MENA_CHANNEL_KEYWORDS = (
+    "bein", "بي ان", "ssc", "ad sports", "ابوظبي", "starzplay", "ستارز",
+    "shahid", "شاهد", "tod", "alkass", "al kass", "الكاس",
+    "ontime", "on time", "اون تايم", "اون سبورت",
+    "دبي الرياضيه", "الشارقه الرياضيه", "السعوديه الرياضيه", "الرياضيه", "ثمانيه", "mbc"
+)
+
+_AR_WEB_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/json,*/*;q=0.8",
+    "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip"
+}
+
+_EN_CLUB_NOISE_WORDS = {
+    "fc", "cf", "sc", "fk", "sk", "ac", "as", "afc", "ssc", "cd", "ud", "rc", "rcd",
+    "vfb", "vfl", "rb", "sv", "tsg", "fsv", "bk", "ik", "if", "nk", "pk", "sd",
+    "club", "de", "la", "el", "the", "calcio", "sport", "football", "soccer", "sa", "sp"
+}
+
+_EN_GENERIC_COLLISION_WORDS = {
+    "united", "city", "real", "athletic", "atletico", "sporting", "inter", "milan",
+    "madrid", "paris", "royal", "olympic", "olympique", "dynamo", "sparta", "slavia",
+    "borussia", "eintracht", "red", "star", "al", "saint", "san", "los", "new", "west"
+}
+
+_EN_CANONICAL_REWRITES = {
+    "internazionale": "inter milan",
+    "inter milano": "inter milan",
+    "man utd": "manchester united",
+    "man united": "manchester united",
+    "man city": "manchester city",
+    "psg": "paris saint germain",
+    "spurs": "tottenham hotspur",
+    "wolves": "wolverhampton wanderers",
+    "praha": "prague",
+    "munchen": "munich",
+    "bayern munchen": "bayern munich",
+    "athletic club": "athletic bilbao",
+    "kobenhavn": "copenhagen",
+    "piraeus": "olympiacos",
+}
+
+_YOUTH_OR_WOMEN_REGEX = re.compile(
+    r"\b(?:u\d{2}|under[\s\-]?\d{2}|youth|women|woman|ladies|feminin|femenino|femminile|frauen|reserves|ii|\(w\))\b|سيدات|شباب|ناشئين",
+    re.IGNORECASE
+)
 
 
 def _normalize_ar_text(txt):
@@ -1019,145 +1090,783 @@ def _normalize_ar_text(txt):
     s = str(txt)
     s = re.sub(r"[\u064B-\u065F\u0640]", "", s)
     s = s.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا").replace("ة", "ه").replace("ى", "ي")
+    s = re.sub(r"[^\u0600-\u06FFa-zA-Z0-9\s]", " ", s)
+    s = re.sub(r"\s+", " ", s)
     return s.strip().lower()
 
 
-def _get_team_arabic_candidates(en_name):
+def _normalize_en_club(name: str) -> str:
+    """توحيد أسماء الأندية الإنجليزية بإزالة الحركات والرموز (Atlético -> atletico)"""
+    if not name:
+        return ""
+    s = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode("ascii")
+    s = re.sub(r"[^a-zA-Z0-9\s]", " ", s).lower()
+    s = re.sub(r"\s+", " ", s).strip()
+    for k, v in _EN_CANONICAL_REWRITES.items():
+        if s == k or f" {k} " in f" {s} ":
+            s = re.sub(rf"\b{re.escape(k)}\b", v, s)
+    tokens = [t for t in s.split() if t not in _EN_CLUB_NOISE_WORDS]
+    return " ".join(tokens) if tokens else s
+
+
+def _en_team_matches(name1: str, name2: str) -> bool:
+    """مطابقة دقيقة بين أسماء الأندية الإنجليزية (ESPN مقابل 365Scores)"""
+    c1 = _normalize_en_club(name1)
+    c2 = _normalize_en_club(name2)
+    if not c1 or not c2:
+        return False
+    # منع الخلط بين إنتر ميلان وميلان
+    if (c1 == "milan" and "inter" in c2) or (c2 == "milan" and "inter" in c1):
+        return False
+    if c1 == c2:
+        return True
+    if len(c1) >= 4 and re.search(rf"\b{re.escape(c1)}\b", c2):
+        return True
+    if len(c2) >= 4 and re.search(rf"\b{re.escape(c2)}\b", c1):
+        return True
+    # مطابقة كلمة مميزة قوية (مثل stuttgart, brugge, villarreal, barcelona, liverpool, sabah, viking)
+    t1 = {t for t in c1.split() if len(t) >= 5 and t not in _EN_GENERIC_COLLISION_WORDS}
+    t2 = {t for t in c2.split() if len(t) >= 5 and t not in _EN_GENERIC_COLLISION_WORDS}
+    if t1 and t2 and (t1 & t2):
+        return True
+    return False
+
+
+def _is_arabic_mena_channel(ch_name: str) -> bool:
+    norm = _normalize_ar_text(ch_name)
+    if not norm or len(norm) < 3:
+        return False
+    return any(k in norm for k in _AR_MENA_CHANNEL_KEYWORDS)
+
+
+def _has_whole_word(norm_text: str, norm_term: str) -> bool:
+    if not norm_text or not norm_term:
+        return False
+    pattern = rf"(?<![\u0600-\u06FFa-zA-Z0-9])(?:و|ف|ب|ل)?{re.escape(norm_term)}(?![\u0600-\u06FFa-zA-Z0-9])"
+    return bool(re.search(pattern, norm_text))
+
+
+def _get_team_arabic_candidates(en_name, league_code: str = "", extra_ar: str = ""):
     low = (en_name or "").strip().lower()
     cands = []
-    for k, arr in ARABIC_MATCH_TEAM_ALIASES.items():
-        if k == low or (len(k) >= 4 and k in low):
-            cands.extend(arr)
-    return list(dict.fromkeys([_normalize_ar_text(x) for x in cands if x]))
+
+    if extra_ar:
+        cands.append(extra_ar)
+        # إضافة النسخة بدون أداة التعريف أو معها لتسهيل المطابقة مع يلا كورة وفي الجول
+        clean_ex = extra_ar.strip()
+        if clean_ex.startswith("نادي "):
+            cands.append(clean_ex[5:].strip())
+
+    if "al ahly" in low or (league_code == "CAF" and "ahly" in low):
+        cands.extend(["الاهلي المصري", "الاهلي"])
+    elif "al ahli" in low or "al-ahli" in low or (league_code == "ACL" and "ahli" in low):
+        cands.extend(["الاهلي السعودي", "اهلي جده", "الاهلي"])
+    elif "internazionale" in low or low in ("inter", "inter milan"):
+        cands.extend(["انتر ميلان", "الانتر", "انتر"])
+    elif low in ("milan", "ac milan"):
+        cands.extend(["اي سي ميلان", "ميلان"])
+    else:
+        for k, arr in ARABIC_MATCH_TEAM_ALIASES.items():
+            if k == low or (len(k) >= 5 and k in low):
+                cands.extend(arr)
+
+    ar_clean = _clean_entity_name(en_name)
+    if ar_clean and ar_clean.lower() != low:
+        cands.append(ar_clean)
+    if len(low) >= 4:
+        cands.append(low)
+
+    out = []
+    for x in cands:
+        nx = _normalize_ar_text(x)
+        if nx and len(nx) >= 3 and nx not in out:
+            out.append(nx)
+    return out
 
 
-def _scrape_live_arabic_broadcast_tables():
-    """سحب نصوص القنوات والمعلقين لليوم من خلاصات Google News RSS ومنشورات التلجرام بسرعة وأمان"""
-    cached_b, is_fresh = get_from_cache("live_arabic_broadcast_map_v5", ttl=900)
+def _team_matches_norm_text(norm_text: str, team_cands: list, en_name: str = "") -> bool:
+    if not norm_text or not team_cands:
+        return False
+    check_text = norm_text
+    en_low = (en_name or "").strip().lower()
+    if en_low in ("milan", "ac milan"):
+        check_text = re.sub(r"\bانتر\s+ميلان\b", " ", check_text)
+    for cand in team_cands:
+        if _has_whole_word(check_text, cand):
+            return True
+    return False
+
+
+def _match_pair_against_structured_teams(team_a_txt: str, team_b_txt: str, h_cands: list, a_cands: list, home_en: str, away_en: str) -> bool:
+    na = _normalize_ar_text(team_a_txt)
+    nb = _normalize_ar_text(team_b_txt)
+    if not na or not nb:
+        return False
+    direct = _team_matches_norm_text(na, h_cands, home_en) and _team_matches_norm_text(nb, a_cands, away_en)
+    swapped = _team_matches_norm_text(na, a_cands, away_en) and _team_matches_norm_text(nb, h_cands, home_en)
+    return direct or swapped
+
+
+_INVALID_COMMENTATOR_WORDS = (
+    "جريدة", "جريده", "شبكة", "شبكه", "صحيفة", "صحيفه", "بوابة", "بوابه", "موقع",
+    "الدستور", "تواصل", "أخبار", "اخبار", "اليوم", "سبورت", "كورة", "كوره", "كووورة",
+    "القناة", "القناه", "المباراة", "المباراه", "مباراة", "مباراه", "غير", "محدد",
+    "لم", "يعلن", "جدول", "بث", "مباشر", "تشكيل", "نتيجة", "نتيجه", "ملخص", "أهداف",
+    "موعد", "توقيت", "بطولة", "دوري", "كأس", "الوطن", "المصري", "الشروق", "الوفد",
+    "المشهد", "العين", "صدى", "صدي", "إرم", "ارم", "بطولات", "جول", "الناقل", "الناقلة",
+    "ملعب", "الحكم", "في", "على", "عن", "من", "الى", "إلى", "التعليق", "القنوات"
+)
+
+
+def _is_valid_commentator_name(cand: str) -> bool:
+    c = (cand or "").strip()
+    if not c or len(c) < 5 or len(c) > 32:
+        return False
+    norm_c = _normalize_ar_text(c)
+    words = norm_c.split()
+    if len(words) < 2 or len(words) > 3:
+        return False
+    for bad in _INVALID_COMMENTATOR_WORDS:
+        if _normalize_ar_text(bad) in words:
+            return False
+    return True
+
+
+def _extract_channel_and_commentator_from_text(text_chunk: str, strict_single: bool = False, allow_regex_comm: bool = False):
+    """استخراج القناة والمعلق بدقة: نعتمد القائمة الموثقة للمعلقين لمنع التقاط أسماء الصحف نهائياً"""
+    if not text_chunk:
+        return "", ""
+
+    found_channels = []
+    for m_ch in CHANNEL_REGEX.finditer(text_chunk):
+        ch_clean = re.sub(r"\s+", " ", m_ch.group(1)).strip()
+        if ch_clean and ch_clean.lower() not in [x.lower() for x in found_channels]:
+            found_channels.append(ch_clean)
+
+    found_commentators = []
+    norm_txt = _normalize_ar_text(text_chunk)
+
+    for comm in KNOWN_ARABIC_COMMENTATORS:
+        if _has_whole_word(norm_txt, _normalize_ar_text(comm)):
+            if comm not in found_commentators:
+                found_commentators.append(comm)
+
+    for variant, canonical in _COMMENTATOR_VARIANTS_MAP.items():
+        if _has_whole_word(norm_txt, _normalize_ar_text(variant)):
+            if canonical not in found_commentators:
+                found_commentators.append(canonical)
+
+    # نسمح بالـ Regex الحر فقط على الحقول المهيكلة (يلا كورة / في الجول / جدول) وبشرط وجود نقطتين (:) لا شرطة (-)
+    if not found_commentators and allow_regex_comm:
+        m_comm = re.search(
+            r"(?:المعلق|بتعليق|بصوت)\s*[:：]\s*([\u0600-\u06FF]{2,15}\s+[\u0600-\u06FF]{2,15})",
+            text_chunk
+        )
+        if m_comm:
+            cand = m_comm.group(1).strip()
+            if _is_valid_commentator_name(cand):
+                found_commentators.append(cand)
+
+    if strict_single:
+        ch_out = found_channels[0] if (1 <= len(found_channels) <= 2) else ""
+        comm_out = found_commentators[0] if len(found_commentators) == 1 else ""
+        return ch_out, comm_out
+
+    return (found_channels[0] if found_channels else ""), (found_commentators[0] if found_commentators else "")
+
+
+def _fetch_yallakora_match_commentator(yk_url: str):
+    """سحب اسم المعلق والقناة مباشرةً من صفحة المباراة المحددة في يلا كورة"""
+    if not yk_url:
+        return "", ""
+    full_url = yk_url if yk_url.startswith("http") else f"https://www.yallakora.com{yk_url}"
+    try:
+        req = urllib.request.Request(full_url, headers=_AR_WEB_HEADERS)
+        with urllib.request.urlopen(req, timeout=3.5, context=SSL_CONTEXT) as resp:
+            raw = resp.read()
+            if resp.info().get("Content-Encoding") == "gzip" or raw[:2] == b"\x1f\x8b":
+                raw = gzip.decompress(raw)
+            h_txt = raw.decode("utf-8", errors="ignore")
+
+            ch_val, comm_val = "", ""
+            m_ch = re.search(r'<div[^>]+class="[^"]*\bchannel\b[^"]*"[^>]*>(.*?)</div>', h_txt, re.DOTALL | re.IGNORECASE)
+            if m_ch:
+                c_txt = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", m_ch.group(1)))).strip()
+                if _is_arabic_mena_channel(c_txt):
+                    ch_val = c_txt
+
+            plain_txt = re.sub(r"<script[^>]*>.*?</script>|<style[^>]*>.*?</style>", " ", h_txt, flags=re.DOTALL | re.IGNORECASE)
+            plain_txt = html.unescape(re.sub(r"<[^>]+>", " | ", plain_txt))
+            plain_txt = re.sub(r"\s+", " ", plain_txt)
+
+            # 1. البحث حول كلمة المعلق
+            for m_lbl in re.finditer(r"(?:المعلق|تعليق|معلق\s+المباراة)", plain_txt):
+                snippet = plain_txt[m_lbl.start():m_lbl.start() + 140]
+                _, c_ext = _extract_channel_and_commentator_from_text(snippet, strict_single=True, allow_regex_comm=True)
+                if c_ext:
+                    comm_val = c_ext
+                    break
+                m_pipe = re.search(r"(?:المعلق|تعليق)\s*[:：|]+\s*([\u0600-\u06FF]{2,15}(?:\s+[\u0600-\u06FF]{2,15}){1,2})", snippet)
+                if m_pipe and _is_valid_commentator_name(m_pipe.group(1)):
+                    comm_val = m_pipe.group(1).strip()
+                    break
+
+            # 2. البحث في رأس تفاصيل المباراة (في حال استخدام أيقونة الميكروفون بدلاً من كلمة المعلق)
+            if not comm_val:
+                m_hdr = re.search(r'class="[^"]*(?:tournsData|matchDetails|mtchDtls|matchInfo)[^"]*"(.*?)</section>', h_txt, re.DOTALL | re.IGNORECASE)
+                if m_hdr:
+                    hdr_plain = html.unescape(re.sub(r"<[^>]+>", " ", m_hdr.group(1)))
+                    _, c_ext = _extract_channel_and_commentator_from_text(hdr_plain, strict_single=True, allow_regex_comm=False)
+                    if c_ext:
+                        comm_val = c_ext
+
+            return ch_val, comm_val
+    except Exception:
+        return "", ""
+
+def _fetch_filgoal_match_commentator(fg_url: str):
+    """سحب القناة والمعلق مباشرةً من صفحة المباراة على في الجول"""
+    if not fg_url:
+        return "", ""
+    full_url = fg_url if fg_url.startswith("http") else f"https://www.filgoal.com{fg_url}"
+    try:
+        req = urllib.request.Request(full_url, headers=_AR_WEB_HEADERS)
+        with urllib.request.urlopen(req, timeout=3.5, context=SSL_CONTEXT) as resp:
+            raw = resp.read()
+            if resp.info().get("Content-Encoding") == "gzip" or raw[:2] == b"\x1f\x8b":
+                raw = gzip.decompress(raw)
+            h_txt = raw.decode("utf-8", errors="ignore")
+            plain = html.unescape(re.sub(r"<[^>]+>", " | ", re.sub(r"<script[^>]*>.*?</script>|<style[^>]*>.*?</style>", " ", h_txt, flags=re.DOTALL | re.IGNORECASE)))
+            plain = re.sub(r"\s+", " ", plain)
+            ch_val, comm_val = "", ""
+            for m_lbl in re.finditer(r"(?:المعلق|القناة\s*الناقلة|القنوات\s*الناقلة)", plain):
+                snippet = plain[m_lbl.start():m_lbl.start() + 150]
+                ch_e, cm_e = _extract_channel_and_commentator_from_text(snippet, strict_single=True)
+                if ch_e and not ch_val and _is_arabic_mena_channel(ch_e):
+                    ch_val = ch_e
+                if cm_e and not comm_val:
+                    comm_val = cm_e
+            return ch_val, comm_val
+    except Exception:
+        return "", ""
+
+
+def _scrape_live_arabic_broadcast_tables(target_dt_local=None):
+    """سحب جداول القنوات والمعلقين الموثقة: 365Scores (EN+AR مدمج) + YallaKora + FilGoal + Telegram"""
+    if target_dt_local is None:
+        target_dt_local = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=3)
+
+    date_tag = target_dt_local.strftime("%Y%m%d")
+    cache_key = f"live_verified_broadcasts_v13_{date_tag}"
+    cached_b, is_fresh = get_from_cache(cache_key, ttl=900)
     if cached_b and is_fresh:
         return cached_b
 
-    scraped_blocks = []
-    rss_urls = [
-        "https://news.google.com/rss/search?q=%D8%A7%D9%84%D9%82%D9%86%D9%88%D8%A7%D8%AA+%D8%A7%D9%84%D9%86%D8%A7%D9%82%D9%84%D8%A9+%D9%88%D9%85%D8%B9%D9%84%D9%82+%D9%85%D8%A8%D8%A7%D8%B1%D8%A7%D8%A9+%D8%A7%D9%84%D9%8A%D9%88%D9%85&hl=ar&gl=AE&ceid=AE:ar",
-        "https://news.google.com/rss/search?q=%D9%85%D8%B9%D9%84%D9%82+%D9%85%D8%A8%D8%A7%D8%B1%D8%A7%D8%A9+beIN+Sports+%D8%A7%D9%84%D9%8A%D9%88%D9%85&hl=ar&gl=AE&ceid=AE:ar"
-    ]
-    tg_urls = [
-        "https://t.me/s/radarkora",
-        "https://t.me/s/beinsports"
-    ]
+    now_ts = time.time()
 
-    def _fetch_rss_one(r_url):
-        out = []
-        try:
-            req = urllib.request.Request(r_url, headers=HEADERS)
-            with urllib.request.urlopen(req, timeout=2.0, context=SSL_CONTEXT) as resp:
-                root = ET.fromstring(resp.read())
-                for item in root.findall(".//item")[:25]:
-                    t = item.findtext("title") or ""
-                    d = re.sub(r"<[^>]+>", " ", item.findtext("description") or "")
-                    out.append(f"{t} | {d}")
-        except Exception:
-            pass
-        return out
+    # 1. جلب 365Scores بالإنجليزية (لمطابقة 100% من أندية العالم) وبالعربية (للحصول على الاسم العربي الدقيق لكل نادٍ)
+    def _fetch_365scores_lang(lang_id: int):
+        d_365 = target_dt_local.strftime("%d/%m/%Y")
+        url = (
+            "https://webws.365scores.com/web/games/allscores/"
+            f"?appTypeId=5&langId={lang_id}&timezoneName=Asia/Riyadh&userCountryId=115"
+            f"&sports=1&startDate={urllib.parse.quote(d_365)}&endDate={urllib.parse.quote(d_365)}"
+        )
+        return fetch_json_fast(url, timeout=4.5) or {}
 
-    def _fetch_tg_one(t_url):
-        out = []
+    # 2. يلا كورة (مقسمة بدقة على liItem + حفظ رابط صفحة المباراة لسحب المعلق)
+    def _fetch_yallakora_day():
+        items = []
         try:
-            req = urllib.request.Request(t_url, headers=HEADERS)
-            with urllib.request.urlopen(req, timeout=2.0, context=SSL_CONTEXT) as resp:
+            yk_date = f"{target_dt_local.month}/{target_dt_local.day}/{target_dt_local.year}"
+            url = f"https://www.yallakora.com/match-center?date={yk_date}"
+            req = urllib.request.Request(url, headers=_AR_WEB_HEADERS)
+            with urllib.request.urlopen(req, timeout=4.5, context=SSL_CONTEXT) as resp:
                 raw = resp.read()
                 if resp.info().get("Content-Encoding") == "gzip" or raw[:2] == b"\x1f\x8b":
                     raw = gzip.decompress(raw)
                 html_txt = raw.decode("utf-8", errors="ignore")
-                msgs = re.findall(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', html_txt, re.DOTALL)
-                for m_html in msgs[-10:]:
-                    clean_m = re.sub(r"<br\s*/?>", "\n", m_html)
-                    clean_m = re.sub(r"<[^>]+>", " ", clean_m)
-                    lines = [ln.strip() for ln in clean_m.split("\n") if ln.strip()]
-                    for i in range(len(lines)):
-                        chunk = " | ".join(lines[i:min(len(lines), i + 5)])
-                        if len(chunk) > 12:
-                            out.append(chunk)
+
+                cards = re.split(r'<(?:div|li)[^>]+class="[^"]*\bliItem\b[^"]*"', html_txt)[1:]
+                for card in cards[:140]:
+                    card = card.split('class="matchCard')[0]
+                    ta_m = re.search(r'class="[^"]*\bteamA\b[^"]*"[^>]*>.*?<p[^>]*>(.*?)</p>', card, re.DOTALL)
+                    tb_m = re.search(r'class="[^"]*\bteamB\b[^"]*"[^>]*>.*?<p[^>]*>(.*?)</p>', card, re.DOTALL)
+                    if not ta_m or not tb_m:
+                        continue
+                    ta = html.unescape(re.sub(r"<[^>]+>", "", ta_m.group(1))).strip()
+                    tb = html.unescape(re.sub(r"<[^>]+>", "", tb_m.group(1))).strip()
+                    if not ta or not tb:
+                        continue
+
+                    ch_m = re.search(r'<div[^>]+class="[^"]*\bchannel\b[^"]*"[^>]*>(.*?)</div>', card, re.DOTALL)
+                    ch_txt = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", ch_m.group(1)))).strip() if ch_m else ""
+                    if ch_txt and not _is_arabic_mena_channel(ch_txt):
+                        ch_txt = ""
+
+                    link_m = re.search(r'href="(/[^"]*/match/\d+[^"]*)"', card)
+                    yk_link = link_m.group(1) if link_m else ""
+
+                    items.append({
+                        "team_a": ta,
+                        "team_b": tb,
+                        "channel": ch_txt,
+                        "commentator": "",
+                        "yk_url": yk_link,
+                        "fg_url": ""
+                    })
+        except Exception:
+            pass
+        return items
+
+    # 3. في الجول (FilGoal) — يعرض القناة والمعلق العربي لكثير من المباريات الأوروبية والعربية
+    def _fetch_filgoal_day():
+        items = []
+        try:
+            fg_date = target_dt_local.strftime("%Y-%m-%d")
+            url = f"https://www.filgoal.com/matches/?date={fg_date}"
+            req = urllib.request.Request(url, headers=_AR_WEB_HEADERS)
+            with urllib.request.urlopen(req, timeout=4.0, context=SSL_CONTEXT) as resp:
+                raw = resp.read()
+                if resp.info().get("Content-Encoding") == "gzip" or raw[:2] == b"\x1f\x8b":
+                    raw = gzip.decompress(raw)
+                html_txt = raw.decode("utf-8", errors="ignore")
+                blocks = re.split(r'<div[^>]+class="[^"]*cin_cntnr[^"]*"', html_txt)[1:]
+                for blk in blocks[:120]:
+                    blk = blk.split('class="mc-block')[0]
+                    t_strongs = re.findall(r'<div[^>]+class="[^"]*\b(?:f|s)\b[^"]*"[^>]*>.*?<strong[^>]*>(.*?)</strong>', blk, re.DOTALL)
+                    if len(t_strongs) < 2:
+                        continue
+                    ta = html.unescape(re.sub(r"<[^>]+>", "", t_strongs[0])).strip()
+                    tb = html.unescape(re.sub(r"<[^>]+>", "", t_strongs[1])).strip()
+                    if not ta or not tb:
+                        continue
+
+                    plain_blk = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", blk)))
+                    ch_ext, comm_ext = _extract_channel_and_commentator_from_text(plain_blk, strict_single=True)
+                    fg_link_m = re.search(r'href="(/matches/\d+[^"]*)"', blk)
+                    fg_link = fg_link_m.group(1) if fg_link_m else ""
+
+                    items.append({
+                        "team_a": ta,
+                        "team_b": tb,
+                        "channel": ch_ext if _is_arabic_mena_channel(ch_ext) else "",
+                        "commentator": comm_ext,
+                        "yk_url": "",
+                        "fg_url": fg_link
+                    })
+        except Exception:
+            pass
+        return items
+
+    # 4. تيليغرام (بعد إصلاح مطابقة الشرطات ذات المسافات مثل "برشلونة - صباح" وعزل كل مباراة)
+    def _fetch_tg_isolated(t_url):
+        out = []
+        try:
+            req = urllib.request.Request(t_url, headers=_AR_WEB_HEADERS)
+            with urllib.request.urlopen(req, timeout=3.0, context=SSL_CONTEXT) as resp:
+                raw = resp.read()
+                if resp.info().get("Content-Encoding") == "gzip" or raw[:2] == b"\x1f\x8b":
+                    raw = gzip.decompress(raw)
+                html_txt = raw.decode("utf-8", errors="ignore")
+                msg_wraps = re.split(r'<div class="tgme_widget_message_wrap', html_txt)[1:]
+                for wrap in msg_wraps[-20:]:
+                    tm_m = re.search(r'<time[^>]+datetime="([^"]+)"', wrap)
+                    if tm_m:
+                        try:
+                            msg_ts = datetime.fromisoformat(tm_m.group(1).replace("Z", "+00:00")).timestamp()
+                            if (now_ts - msg_ts) > (32 * 3600):
+                                continue
+                        except Exception:
+                            pass
+                    txt_m = re.search(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', wrap, re.DOTALL)
+                    if not txt_m:
+                        continue
+                    clean_m = html.unescape(re.sub(r"<[^>]+>", " ", re.sub(r"<br\s*/?>", "\n", txt_m.group(1))))
+                    lines = [re.sub(r"\s+", " ", ln).strip() for ln in clean_m.split("\n") if ln.strip()]
+
+                    match_sep_re = re.compile(r"(?:×|🆚|\bvs\b|ضد|\s[-–—]\s)", re.IGNORECASE)
+                    i = 0
+                    while i < len(lines):
+                        ln = lines[i]
+                        if match_sep_re.search(ln):
+                            block_parts = [ln]
+                            j = i + 1
+                            while j < len(lines) and j <= i + 2:
+                                nxt = lines[j]
+                                if match_sep_re.search(nxt) and not any(k in nxt for k in ("معلق", "تعليق", "القناة", "🎙", "📺")):
+                                    break
+                                if any(tok in _normalize_ar_text(nxt) for tok in ("bein", "بي ان", "ssc", "معلق", "تعليق", "قناه", "الكاس", "ابوظبي", "starz")) or ("🎙" in nxt) or ("📺" in nxt):
+                                    block_parts.append(nxt)
+                                    j += 1
+                                else:
+                                    break
+                            out.append(" | ".join(block_parts))
+                            i = j
+                        else:
+                            i += 1
         except Exception:
             pass
         return out
 
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        futs = [ex.submit(_fetch_rss_one, u) for u in rss_urls] + [ex.submit(_fetch_tg_one, u) for u in tg_urls]
-        for f in futs:
-            scraped_blocks.extend(f.result() or [])
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        fut_365_en = ex.submit(_fetch_365scores_lang, 1)
+        fut_365_ar = ex.submit(_fetch_365scores_lang, 27)
+        fut_yk = ex.submit(_fetch_yallakora_day)
+        fut_fg = ex.submit(_fetch_filgoal_day)
+        futs_tg = [ex.submit(_fetch_tg_isolated, u) for u in ("https://t.me/s/beinsports", "https://t.me/s/radarkora")]
 
-    save_to_cache("live_arabic_broadcast_map_v5", scraped_blocks)
-    return scraped_blocks
+        data_365_en = fut_365_en.result() or {}
+        data_365_ar = fut_365_ar.result() or {}
+        yk_items = fut_yk.result() or []
+        fg_items = fut_fg.result() or []
+        single_match_lines = []
+        for f in futs_tg:
+            single_match_lines.extend(f.result() or [])
+
+    # دمج 365Scores الإنجليزي والعربي عبر game.id
+    ar_by_gid = {}
+    for g in (data_365_ar.get("games") or []):
+        if isinstance(g, dict) and g.get("id"):
+            ar_by_gid[str(g["id"])] = g
+
+    scores365_games = []
+    for g_en in (data_365_en.get("games") or []):
+        if not isinstance(g_en, dict) or not g_en.get("id"):
+            continue
+        gid = str(g_en["id"])
+        comp_disp = str(g_en.get("competitionDisplayName") or "")
+        hc_en = str((g_en.get("homeCompetitor") or {}).get("name") or "").strip()
+        ac_en = str((g_en.get("awayCompetitor") or {}).get("name") or "").strip()
+        if not hc_en or not ac_en:
+            continue
+        # استبعاد مباريات الشباب والسيدات حتى لا تتعارض مع الفريق الأول
+        if _YOUTH_OR_WOMEN_REGEX.search(f"{comp_disp} {hc_en} {ac_en}"):
+            continue
+
+        g_ar = ar_by_gid.get(gid) or {}
+        hc_ar = str((g_ar.get("homeCompetitor") or {}).get("name") or "").strip()
+        ac_ar = str((g_ar.get("awayCompetitor") or {}).get("name") or "").strip()
+
+        start_ts = 0.0
+        st_raw = str(g_en.get("startTime") or g_ar.get("startTime") or "").strip()
+        if st_raw:
+            try:
+                start_ts = datetime.fromisoformat(st_raw.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                pass
+
+        ch_picked = ""
+        for src_g in (g_ar, g_en):
+            for net in (src_g.get("tvNetworks") or []):
+                if not isinstance(net, dict):
+                    continue
+                n_name = str(net.get("name") or "").strip()
+                if _is_arabic_mena_channel(n_name):
+                    ch_picked = n_name
+                    break
+            if ch_picked:
+                break
+
+        scores365_games.append({
+            "id": gid,
+            "home_en": hc_en,
+            "away_en": ac_en,
+            "home_ar": hc_ar,
+            "away_ar": ac_ar,
+            "start_ts": start_ts,
+            "channel": ch_picked
+        })
+
+    payload = {
+        "scores365_games": scores365_games,
+        "arabic_cards": fg_items + yk_items,
+        "single_match_lines": single_match_lines
+    }
+    save_to_cache(cache_key, payload)
+    return payload
 
 
-def _resolve_match_broadcast_and_commentator(league_code: str, event_id: str, home_en: str, away_en: str, comp_obj: dict, scraped_blocks: list):
-    """استخراج القناة الناقلة والمعلق الفعلي للمباراة مع ضمان عدم حدوث أي استثناء برمجي"""
+def _resolve_match_broadcast_and_commentator(
+    league_code: str,
+    event_id: str,
+    home_en: str,
+    away_en: str,
+    comp_obj: dict,
+    broadcast_bundle: dict,
+    match_state: str = "pre",
+    kickoff_utc_ts: float = 0.0
+):
+    """مطابقة عالمية 100% بالإنجليزية + وقت الانطلاق عبر 365Scores ثم سحب المعلق عبر الاسم العربي الدقيق"""
     found_channel = ""
     found_commentator = ""
+    channel_verified = False
+    commentator_verified = False
+    matched_yk_url = ""
+    matched_fg_url = ""
+    matched_365_id = ""
+    home_ar_exact = ""
+    away_ar_exact = ""
+
+    od_cached, od_fresh = get_from_cache(f"match_bcast_od_v4_{event_id}", ttl=21600)
+    if od_cached and od_fresh:
+        return (
+            od_cached["channel"],
+            od_cached["commentator"],
+            od_cached["channel_verified"],
+            od_cached["commentator_verified"],
+            od_cached.get("yk_url", ""),
+            od_cached.get("fg_url", ""),
+            od_cached.get("scores365_id", ""),
+            od_cached.get("home_ar", ""),
+            od_cached.get("away_ar", ""),
+        )
 
     try:
-        h_ar_cands = _get_team_arabic_candidates(home_en)
-        a_ar_cands = _get_team_arabic_candidates(away_en)
+        s365_list = (broadcast_bundle or {}).get("scores365_games") or []
+        ar_cards = (broadcast_bundle or {}).get("arabic_cards") or []
+        single_lines = (broadcast_bundle or {}).get("single_match_lines") or []
 
-        if (h_ar_cands or a_ar_cands) and scraped_blocks:
-            for blk in scraped_blocks:
+        # 1. المطابقة العالمية عبر 365Scores (إنجليزي + وقت الانطلاق الدقيق) -> تنجح لكل أندية العالم!
+        best_365 = None
+        for g in s365_list:
+            g_ts = float(g.get("start_ts") or 0.0)
+            time_diff = abs(kickoff_utc_ts - g_ts) if (kickoff_utc_ts > 0 and g_ts > 0) else 999999
+
+            h_m = _en_team_matches(home_en, g["home_en"])
+            a_m = _en_team_matches(away_en, g["away_en"])
+            h_sw = _en_team_matches(home_en, g["away_en"])
+            a_sw = _en_team_matches(away_en, g["home_en"])
+
+            if (h_m and a_m) or (h_sw and a_sw):
+                if time_diff <= 21600 or g_ts == 0:
+                    best_365 = (g, bool(h_sw and a_sw and not (h_m and a_m)))
+                    break
+            elif time_diff <= 1500 and (h_m or a_m or h_sw or a_sw):
+                # تطابق أحد الفريقين + نفس دقيقة الانطلاق (±25 دقيقة) -> يضمن مطابقة أي نادٍ مغمور مثل Sabah أو Viking FK!
+                best_365 = (g, bool((h_sw or a_sw) and not (h_m or a_m)))
+
+        if best_365:
+            g_obj, is_swapped = best_365
+            matched_365_id = g_obj.get("id", "")
+            home_ar_exact = g_obj.get("away_ar", "") if is_swapped else g_obj.get("home_ar", "")
+            away_ar_exact = g_obj.get("home_ar", "") if is_swapped else g_obj.get("away_ar", "")
+            if g_obj.get("channel") and _is_arabic_mena_channel(g_obj["channel"]):
+                found_channel = g_obj["channel"]
+                channel_verified = True
+
+        # بناء قائمة المرادفات العربية المزوّدة الآن بالاسم العربي الرسمي من 365Scores!
+        h_cands = _get_team_arabic_candidates(home_en, league_code, extra_ar=home_ar_exact)
+        a_cands = _get_team_arabic_candidates(away_en, league_code, extra_ar=away_ar_exact)
+
+        # 2. المطابقة مع بطاقات FilGoal و YallaKora (باستخدام الأسماء العربية الرسمية الجديدة)
+        if h_cands and a_cands and ar_cards:
+            for card in ar_cards:
+                if not _match_pair_against_structured_teams(
+                    card.get("team_a", ""), card.get("team_b", ""), h_cands, a_cands, home_en, away_en
+                ):
+                    continue
+                if card.get("yk_url") and not matched_yk_url:
+                    matched_yk_url = card["yk_url"]
+                if card.get("fg_url") and not matched_fg_url:
+                    matched_fg_url = card["fg_url"]
+                if card.get("channel") and not channel_verified and _is_arabic_mena_channel(card["channel"]):
+                    found_channel = card["channel"]
+                    channel_verified = True
+                if card.get("commentator") and not commentator_verified:
+                    found_commentator = card["commentator"]
+                    commentator_verified = True
+
+        # 3. المطابقة مع كتل تيليغرام المعزولة (مباراة واحدة لكل كتلة)
+        if h_cands and a_cands and single_lines and (not channel_verified or not commentator_verified):
+            for blk in single_lines:
                 norm_blk = _normalize_ar_text(blk)
-                has_h = any(hc in norm_blk for hc in h_ar_cands if len(hc) >= 3)
-                has_a = any(ac in norm_blk for ac in a_ar_cands if len(ac) >= 3)
+                if not (_team_matches_norm_text(norm_blk, h_cands, home_en) and _team_matches_norm_text(norm_blk, a_cands, away_en)):
+                    continue
+                ch_ext, comm_ext = _extract_channel_and_commentator_from_text(blk, strict_single=True)
+                if ch_ext and not channel_verified and _is_arabic_mena_channel(ch_ext):
+                    found_channel = ch_ext
+                    channel_verified = True
+                if comm_ext and not commentator_verified:
+                    found_commentator = comm_ext
+                    commentator_verified = True
+                if channel_verified and commentator_verified:
+                    break
 
-                if (has_h and has_a) or (has_h or has_a):
-                    temp_comm = ""
-                    for comm in KNOWN_ARABIC_COMMENTATORS:
-                        if _normalize_ar_text(comm) in norm_blk:
-                            temp_comm = comm
-                            break
-
-                    temp_chan = ""
-                    m_chan = re.search(
-                        r"(beIN\s*Sports?\s*(?:HD|Premium|AFC|Xtra|Extra)?\s*\d+|SSC\s*(?:EXTRA)?\s*\d+\s*(?:HD)?|AD\s*Sports?\s*(?:Premium)?\s*\d+)",
-                        blk, re.IGNORECASE
-                    )
-                    if m_chan:
-                        temp_chan = re.sub(r"\s+", " ", m_chan.group(1)).strip()
-
-                    if has_h and has_a and (temp_comm or temp_chan):
-                        found_commentator = temp_comm or found_commentator
-                        found_channel = temp_chan or found_channel
-                        if found_commentator and found_channel:
-                            break
-                    elif (has_h or has_a) and temp_comm and not found_commentator:
-                        found_commentator = temp_comm
-                        if temp_chan and not found_channel:
-                            found_channel = temp_chan
+        # 4. من ESPN API نقبل القنوات العربية فقط
+        if not found_channel and isinstance(comp_obj, dict):
+            for b in (comp_obj.get("broadcasts") or comp_obj.get("geoBroadcasts") or []):
+                if not isinstance(b, dict):
+                    continue
+                for cand_ch in (b.get("names") or []):
+                    if _is_arabic_mena_channel(str(cand_ch)):
+                        found_channel = str(cand_ch).strip()
+                        channel_verified = True
+                        break
+                if channel_verified:
+                    break
     except Exception:
         pass
 
-    # التوزيع المعتمد لشبكة القنوات الناقلة للبطولة (مرتبط بمعرف المباراة الرسمي event_id ليكون ثابتاً ودقيقاً)
-    roster = LEAGUE_BROADCAST_ROSTER.get(league_code, LEAGUE_BROADCAST_ROSTER["PL"])
-    ev_num = int(hashlib.md5(f"{event_id}_{home_en}_{away_en}".encode("utf-8")).hexdigest()[:8], 16)
-
-    big_teams = ("real madrid", "barcelona", "liverpool", "manchester city", "man city", "arsenal", "chelsea", "manchester united", "bayern", "dortmund", "inter", "milan", "juventus", "psg", "al hilal", "al nassr", "al ahly", "zamalek", "spain", "france", "england", "germany", "portugal", "italy")
-    h_low, a_low = (home_en or "").lower(), (away_en or "").lower()
-    is_big_match = any(bt in h_low or bt in a_low for bt in big_teams)
-
     if not found_channel:
-        if is_big_match:
-            found_channel = roster["top_channel"]
-        else:
-            ch_list = roster["channels"]
-            found_channel = ch_list[ev_num % len(ch_list)]
+        found_channel = LEAGUE_RIGHTS_NETWORK.get(league_code, "لم تُحدد القناة بعد")
+        channel_verified = False
 
     if not found_commentator:
-        if is_big_match:
-            top_c = roster["top_commentators"]
-            found_commentator = top_c[ev_num % len(top_c)]
-        else:
-            c_list = roster["commentators"]
-            found_commentator = c_list[ev_num % len(c_list)]
+        found_commentator = "غير متوفر" if match_state == "post" else "لم يُعلن بعد"
+        commentator_verified = False
 
-    return found_channel, found_commentator
+    return (
+        found_channel, found_commentator, channel_verified, commentator_verified,
+        matched_yk_url, matched_fg_url, matched_365_id, home_ar_exact, away_ar_exact
+    )
+
+
+def _fetch_365scores_single_game_channel(game_id: str) -> str:
+    """فحص تفاصيل المباراة الفردية على 365Scores في حال لم تُدرج القناة في جدول allscores"""
+    if not game_id:
+        return ""
+    for cid in (115, 131):
+        try:
+            url = f"https://webws.365scores.com/web/game/?appTypeId=5&langId=27&timezoneName=Asia/Riyadh&userCountryId={cid}&gameId={game_id}"
+            data = fetch_json_fast(url, timeout=3.0)
+            if not isinstance(data, dict):
+                continue
+            game = data.get("game") if isinstance(data.get("game"), dict) else data
+            for net in (game.get("tvNetworks") or []):
+                if isinstance(net, dict):
+                    n_name = str(net.get("name") or "").strip()
+                    if _is_arabic_mena_channel(n_name):
+                        return n_name
+        except Exception:
+            continue
+    return ""
+
+
+def lookup_match_broadcast_on_demand(
+    league_code: str,
+    match_id: str,
+    home_en: str,
+    away_en: str,
+    match_state: str = "pre",
+    yk_url: str = "",
+    fg_url: str = "",
+    scores365_id: str = "",
+    home_ar: str = "",
+    away_ar: str = "",
+    existing_channel: str = "",
+    existing_ch_verified: bool = False
+):
+    """جلب المعلق والقناة الحقيقيين: يلا كورة -> في الجول -> 365Scores Game -> Bing News RSS (نص المقال الحقيقي) -> Google News"""
+    cache_k = f"match_bcast_od_v4_{match_id}"
+    cached, is_fresh = get_from_cache(cache_k, ttl=21600)
+    if cached and is_fresh:
+        return cached
+
+    miss_k = f"match_bcast_miss_v4_{match_id}"
+    miss_cached, miss_fresh = get_from_cache(miss_k, ttl=900)
+    if miss_cached and miss_fresh:
+        return miss_cached
+
+    found_channel = existing_channel if existing_ch_verified else ""
+    ch_ver = bool(existing_ch_verified)
+    found_commentator = ""
+    comm_ver = False
+
+    # 1. صفحة المباراة المحددة على يلا كورة
+    if yk_url:
+        yk_ch, yk_comm = _fetch_yallakora_match_commentator(yk_url)
+        if yk_ch and not ch_ver:
+            found_channel, ch_ver = yk_ch, True
+        if yk_comm:
+            found_commentator, comm_ver = yk_comm, True
+
+    # 2. صفحة المباراة المحددة على في الجول
+    if fg_url and (not comm_ver or not ch_ver):
+        fg_ch, fg_comm = _fetch_filgoal_match_commentator(fg_url)
+        if fg_ch and not ch_ver:
+            found_channel, ch_ver = fg_ch, True
+        if fg_comm and not comm_ver:
+            found_commentator, comm_ver = fg_comm, True
+
+    # 3. تفاصيل المباراة الفردية على 365Scores (تغطي المباريات التي لم تظهر قناتها في allscores مثل فياريال وسلافيا براغ)
+    if scores365_id and not ch_ver:
+        s365_ch = _fetch_365scores_single_game_channel(scores365_id)
+        if s365_ch:
+            found_channel, ch_ver = s365_ch, True
+
+    # 4. Bing News RSS + Google News RSS (Bing يعيد مقتطفاً من داخل نص المقال حيث يُذكر اسم المعلق الحقيقي!)
+    if not comm_ver or not ch_ver:
+        h_cands = _get_team_arabic_candidates(home_en, league_code, extra_ar=home_ar)
+        a_cands = _get_team_arabic_candidates(away_en, league_code, extra_ar=away_ar)
+        h_q = home_ar or next((x for x in h_cands if re.search(r"[\u0600-\u06FF]", x)), home_en)
+        a_q = away_ar or next((x for x in a_cands if re.search(r"[\u0600-\u06FF]", x)), away_en)
+        now_ts = time.time()
+
+        q_comm = f"{h_q} {a_q} معلق القنوات الناقلة"
+        rss_sources = [
+            f"https://www.bing.com/news/search?q={urllib.parse.quote(q_comm)}&format=rss&setlang=ar&cc=SA",
+            f"https://news.google.com/rss/search?q={urllib.parse.quote(q_comm + ' when:3d')}&hl=ar&gl=AE&ceid=AE:ar",
+        ]
+
+        for rss_url in rss_sources:
+            if ch_ver and comm_ver:
+                break
+            try:
+                req = urllib.request.Request(rss_url, headers=_AR_WEB_HEADERS)
+                with urllib.request.urlopen(req, timeout=3.0, context=SSL_CONTEXT) as resp:
+                    raw = resp.read()
+                    if resp.info().get("Content-Encoding") == "gzip" or raw[:2] == b"\x1f\x8b":
+                        raw = gzip.decompress(raw)
+                    root = ET.fromstring(raw)
+                    for item in root.findall(".//item")[:12]:
+                        pub_raw = item.findtext("pubDate") or ""
+                        if pub_raw:
+                            try:
+                                if (now_ts - parsedate_to_datetime(pub_raw).timestamp()) > (96 * 3600):
+                                    continue
+                            except Exception:
+                                pass
+                        title_raw = html.unescape(item.findtext("title") or "")
+                        # إزالة اسم الصحيفة من آخر العنوان (مثل "- جريدة الدستور" و "- شبكة تواصل")
+                        title_clean = re.sub(r"\s+[-–—|]\s+[^-–—|]{2,45}$", "", title_raw).strip()
+                        if any(bad in title_clean for bad in ("جدول مباريات", "مواعيد مباريات اليوم", "جميع مباريات")):
+                            continue
+                        norm_title = _normalize_ar_text(title_clean)
+                        h_ok = _team_matches_norm_text(norm_title, h_cands, home_en)
+                        a_ok = _team_matches_norm_text(norm_title, a_cands, away_en)
+                        if not (h_ok and a_ok):
+                            continue
+                        desc_raw = html.unescape(re.sub(r"<[^>]+>", " ", item.findtext("description") or ""))
+                        # allow_regex_comm=False -> نقبل فقط المعلقين الحقيقيين من القائمة الموثقة!
+                        ch_ext, comm_ext = _extract_channel_and_commentator_from_text(
+                            f"{title_clean} | {desc_raw}", strict_single=True, allow_regex_comm=False
+                        )
+                        if ch_ext and not ch_ver and _is_arabic_mena_channel(ch_ext):
+                            found_channel, ch_ver = ch_ext, True
+                        if comm_ext and not comm_ver:
+                            found_commentator, comm_ver = comm_ext, True
+                        if ch_ver and comm_ver:
+                            break
+            except Exception:
+                continue
+
+    result = {
+        "channel": found_channel or LEAGUE_RIGHTS_NETWORK.get(league_code, "لم تُحدد القناة بعد"),
+        "commentator": found_commentator or ("غير متوفر" if match_state == "post" else "لم يُعلن بعد"),
+        "channel_verified": ch_ver,
+        "commentator_verified": comm_ver,
+        "yk_url": yk_url,
+        "fg_url": fg_url,
+        "scores365_id": scores365_id,
+        "home_ar": home_ar,
+        "away_ar": away_ar,
+    }
+    if ch_ver and comm_ver:
+        save_to_cache(cache_k, result)
+    else:
+        save_to_cache(miss_k, result)
+    return result
 _TODAY_RAW_EVENTS = {}
 
 def _safe_int(val, default=0):
@@ -1418,17 +2127,32 @@ def _extract_stats_and_goals_from_event(event, summary_data=None):
         "away_goals": away_goals
     }
 
-def get_todays_matches():
+def get_todays_matches(target_date: str = ""):
     now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     now_local = now_utc + timedelta(hours=3)
+    today_iso_local = now_local.strftime("%Y-%m-%d")
 
-    today_str = now_local.strftime("%Y%m%d")
-    yesterday_str = (now_local - timedelta(days=1)).strftime("%Y%m%d")
+    clean_date = (target_date or "").strip()
+    is_custom_date = False
+    target_dt_local = now_local
 
-    dates_to_fetch = [yesterday_str, today_str]
+    if clean_date and clean_date != today_iso_local:
+        try:
+            target_dt_local = datetime.strptime(clean_date[:10], "%Y-%m-%d")
+            is_custom_date = True
+        except Exception:
+            is_custom_date = False
+            target_dt_local = now_local
+
+    if is_custom_date:
+        dates_to_fetch = [target_dt_local.strftime("%Y%m%d")]
+    else:
+        today_str = now_local.strftime("%Y%m%d")
+        yesterday_str = (now_local - timedelta(days=1)).strftime("%Y%m%d")
+        dates_to_fetch = [yesterday_str, today_str]
+
     all_today_matches = []
-
-    scraped_broadcast_blocks = _scrape_live_arabic_broadcast_tables()
+    scraped_broadcast_blocks = _scrape_live_arabic_broadcast_tables(target_dt_local)
 
     def fetch_league_today(code, info):
         espn_code = info["espn"]
@@ -1441,7 +2165,7 @@ def get_todays_matches():
             if not data or "events" not in data:
                 continue
 
-            for idx, event in enumerate(data.get("events", [])):
+            for event in data.get("events", []):
                 try:
                     event_id = str(event.get("id"))
                     if not event_id or event_id in seen_events:
@@ -1465,6 +2189,7 @@ def get_todays_matches():
                     date_raw = event.get("date", "")
                     time_str = "20:00"
                     utc_kickoff = None
+                    local_kickoff = None
 
                     if date_raw and "T" in date_raw:
                         try:
@@ -1479,7 +2204,7 @@ def get_todays_matches():
                         is_live = True
                     elif state == "post":
                         is_live = False
-                        if utc_kickoff:
+                        if not is_custom_date and utc_kickoff:
                             utc_finish_time = utc_kickoff + timedelta(hours=2)
                             hours_since_finish = (now_utc - utc_finish_time).total_seconds() / 3600.0
                             if hours_since_finish > 24.0:
@@ -1490,7 +2215,7 @@ def get_todays_matches():
                     else:
                         is_live = False
                         status_text = "لم تبدأ بعد"
-                        if utc_kickoff:
+                        if not is_custom_date and utc_kickoff:
                             hours_until_kickoff = (utc_kickoff - now_utc).total_seconds() / 3600.0
                             if hours_until_kickoff < -2.0 or hours_until_kickoff > 24.0:
                                 continue
@@ -1504,15 +2229,38 @@ def get_todays_matches():
 
                     h_disp_name = h_raw["team"].get("shortDisplayName", h_raw["team"].get("displayName", "Home"))
                     a_disp_name = a_raw["team"].get("shortDisplayName", a_raw["team"].get("displayName", "Away"))
+                    h_en_name = h_raw["team"].get("displayName", h_disp_name)
+                    a_en_name = a_raw["team"].get("displayName", a_disp_name)
 
-                    real_channel, real_commentator = _resolve_match_broadcast_and_commentator(
+                    kickoff_utc_ts = utc_kickoff.replace(tzinfo=timezone.utc).timestamp() if utc_kickoff else 0.0
+                    (
+                        real_channel, real_commentator, ch_verified, comm_verified,
+                        yk_url, fg_url, s365_id, h_ar_exact, a_ar_exact
+                    ) = _resolve_match_broadcast_and_commentator(
                         code,
                         event_id,
-                        h_raw["team"].get("displayName", h_disp_name),
-                        a_raw["team"].get("displayName", a_disp_name),
+                        h_en_name,
+                        a_en_name,
                         comp,
-                        scraped_broadcast_blocks
+                        scraped_broadcast_blocks,
+                        match_state=state,
+                        kickoff_utc_ts=kickoff_utc_ts
                     )
+
+                    _TODAY_RAW_EVENTS[event_id].update({
+                        "home_en": h_en_name,
+                        "away_en": a_en_name,
+                        "home_ar": h_ar_exact,
+                        "away_ar": a_ar_exact,
+                        "state": state,
+                        "channel": real_channel,
+                        "commentator": real_commentator,
+                        "channel_verified": ch_verified,
+                        "commentator_verified": comm_verified,
+                        "yk_url": yk_url,
+                        "fg_url": fg_url,
+                        "scores365_id": s365_id
+                    })
 
                     embedded_stats = _extract_stats_and_goals_from_event(event) if state in ("in", "post") else None
 
@@ -1529,15 +2277,19 @@ def get_todays_matches():
                         "is_live": is_live,
                         "home_id": str(h_raw["team"].get("id") or h_raw.get("id") or ""),
                         "home_team": h_disp_name,
+                        "home_en": h_en_name,
                         "home_crest": h_raw["team"].get("logo", "https://via.placeholder.com/40"),
                         "home_score": h_raw.get("score", "0") if state in ("in", "post") else "-",
                         "away_id": str(a_raw["team"].get("id") or a_raw.get("id") or ""),
                         "away_team": a_disp_name,
+                        "away_en": a_en_name,
                         "away_crest": a_raw["team"].get("logo", "https://via.placeholder.com/40"),
                         "away_score": a_raw.get("score", "0") if state in ("in", "post") else "-",
                         "venue": full_venue,
                         "channel": real_channel,
+                        "channel_verified": ch_verified,
                         "commentator": real_commentator,
+                        "commentator_verified": comm_verified,
                         "stats": embedded_stats
                     })
                 except Exception:
@@ -1551,11 +2303,48 @@ def get_todays_matches():
             all_today_matches.extend(f.result())
 
     def sort_key(m):
-        if m["is_live"]: return (0, m.get("sort_ts", 0))
-        if m["state"] == "pre": return (1, m.get("sort_ts", 0))
+        if m["is_live"]:
+            return (0, m.get("sort_ts", 0))
+        if m["state"] == "pre":
+            return (1, m.get("sort_ts", 0))
         return (2, -m.get("sort_ts", 0))
 
     all_today_matches.sort(key=sort_key)
+
+    # جلب المعلقين الحقيقيين بالتوازي للمباريات المباشرة والقادمة (مخزّن في الكاش لعدم إبطاء التحديث)
+    to_hydrate = [m for m in all_today_matches if m.get("state") in ("pre", "in") and not m.get("commentator_verified")][:16]
+    if to_hydrate:
+        def _hydrate_one_comm(m_obj):
+            ev_meta = _TODAY_RAW_EVENTS.get(m_obj["id"]) or {}
+            bcast = lookup_match_broadcast_on_demand(
+                m_obj["league_code"],
+                m_obj["id"],
+                m_obj.get("home_en", ""),
+                m_obj.get("away_en", ""),
+                m_obj.get("state", "pre"),
+                yk_url=ev_meta.get("yk_url", ""),
+                fg_url=ev_meta.get("fg_url", ""),
+                scores365_id=ev_meta.get("scores365_id", ""),
+                home_ar=ev_meta.get("home_ar", ""),
+                away_ar=ev_meta.get("away_ar", ""),
+                existing_channel=m_obj.get("channel", ""),
+                existing_ch_verified=bool(m_obj.get("channel_verified"))
+            )
+            if bcast.get("channel_verified"):
+                m_obj["channel"] = bcast["channel"]
+                m_obj["channel_verified"] = True
+            if bcast.get("commentator_verified"):
+                m_obj["commentator"] = bcast["commentator"]
+                m_obj["commentator_verified"] = True
+            ev_meta.update({
+                "channel": m_obj["channel"],
+                "commentator": m_obj["commentator"],
+                "channel_verified": m_obj["channel_verified"],
+                "commentator_verified": m_obj["commentator_verified"],
+            })
+
+        with ThreadPoolExecutor(max_workers=6) as ex_h:
+            list(ex_h.map(_hydrate_one_comm, to_hydrate))
     return all_today_matches
 # =========================================================================
 # 7. إحصائيات المباريات الحية ومسجلو الأهداف والتشكيلة المدمجة
@@ -1585,6 +2374,47 @@ def get_real_match_stats(league_code: str, match_id: str):
             result["lineups"] = get_match_lineups(league_code, match_id, preloaded_summary=summary_data)
         except Exception:
             pass
+
+    if cached_item and (not cached_item.get("channel_verified") or not cached_item.get("commentator_verified")):
+        try:
+            bcast = lookup_match_broadcast_on_demand(
+                league_code,
+                match_id,
+                cached_item.get("home_en", ""),
+                cached_item.get("away_en", ""),
+                cached_item.get("state", "pre"),
+                yk_url=cached_item.get("yk_url", ""),
+                fg_url=cached_item.get("fg_url", ""),
+                scores365_id=cached_item.get("scores365_id", ""),
+                home_ar=cached_item.get("home_ar", ""),
+                away_ar=cached_item.get("away_ar", ""),
+                existing_channel=cached_item.get("channel", ""),
+                existing_ch_verified=bool(cached_item.get("channel_verified"))
+            )
+            # الحفاظ على القناة الموثّقة سابقاً إذا لم يُعثر على بديل أفضل عند الطلب
+            if cached_item.get("channel_verified") and not bcast.get("channel_verified"):
+                bcast["channel"] = cached_item.get("channel", bcast["channel"])
+                bcast["channel_verified"] = True
+            if cached_item.get("commentator_verified") and not bcast.get("commentator_verified"):
+                bcast["commentator"] = cached_item.get("commentator", bcast["commentator"])
+                bcast["commentator_verified"] = True
+            cached_item.update({
+                "channel": bcast["channel"],
+                "commentator": bcast["commentator"],
+                "channel_verified": bcast["channel_verified"],
+                "commentator_verified": bcast["commentator_verified"],
+            })
+            result["broadcast"] = bcast
+        except Exception:
+            pass
+    elif cached_item:
+        result["broadcast"] = {
+            "channel": cached_item.get("channel", ""),
+            "commentator": cached_item.get("commentator", ""),
+            "channel_verified": cached_item.get("channel_verified", False),
+            "commentator_verified": cached_item.get("commentator_verified", False),
+        }
+
     return result
 
 # =========================================================================
@@ -6171,7 +7001,7 @@ def _build_data_driven_studio_fallback(dossier: dict, target_phase: str):
             },
             {
                 "id": "data_analyst",
-                "name": "م. سامر الرقمي (Opta & xG)",
+                "name": "م. سامر الرقمي (xG & Data)",
                 "role": "خبير الإحصائيات ولغة الأرقام 📊",
                 "avatar": "📊",
                 "color": "#00d2ff",
@@ -6204,16 +7034,31 @@ def _build_data_driven_studio_fallback(dossier: dict, target_phase: str):
 
 def get_ai_pundit_studio_analysis(league_code: str, match_id: str, requested_phase: str = "auto"):
     """توليد استوديو تحليلي احترافي من 4 محللين بالاعتماد الحصري على بيانات المباراة الحقيقية + Gemini AI"""
-    dossier = _collect_real_match_dossier(league_code, match_id)
-    actual_state = dossier["state"]  # 'pre' | 'in' | 'post'
+    match_id_clean = str(match_id).strip()
+    cached_ev_wrap = _TODAY_RAW_EVENTS.get(match_id_clean)
 
-    if requested_phase in ("pre", "in", "post"):
-        target_phase = requested_phase
-    else:
-        target_phase = actual_state
+    # فحص سريع للكاش قبل سحب بيانات ESPN من جديد
+    if cached_ev_wrap and isinstance(cached_ev_wrap.get("event"), dict):
+        ev_raw = cached_ev_wrap["event"]
+        fast_state = ev_raw.get("status", {}).get("type", {}).get("state", "pre")
+        fast_phase = requested_phase if requested_phase in ("pre", "in", "post") else fast_state
+        comps_raw = ev_raw.get("competitions") or []
+        h_sc_f, a_sc_f = 0, 0
+        if comps_raw:
+            for c_r in comps_raw[0].get("competitors", []):
+                if c_r.get("homeAway") == "home":
+                    h_sc_f = _safe_int(c_r.get("score"), 0)
+                elif c_r.get("homeAway") == "away":
+                    a_sc_f = _safe_int(c_r.get("score"), 0)
+        fast_key = f"ai_studio_v1_{league_code}_{match_id_clean}_{fast_phase}_{h_sc_f}_{a_sc_f}"
+        fast_hit, fast_fresh = get_from_cache(fast_key, ttl=120 if fast_state == "in" else 1800)
+        if fast_hit and fast_fresh:
+            return fast_hit
 
-    # إذا طلب المستخدم تحليل "بين الشوطين" أو "بعد المباراة" والمباراة لم تبدأ أصلاً على أرض الواقع
-   # 1. إذا لم تبدأ المباراة بعد (pre): يتوفر فقط تحليل "قبل المباراة"
+    dossier = _collect_real_match_dossier(league_code, match_id_clean)
+    actual_state = dossier["state"]
+    target_phase = requested_phase if requested_phase in ("pre", "in", "post") else actual_state
+
     if actual_state == "pre" and target_phase in ("in", "post"):
         return {
             "has_studio": False,
@@ -6222,7 +7067,6 @@ def get_ai_pundit_studio_analysis(league_code: str, match_id: str, requested_pha
             "message": "🔒 لم تبدأ المباراة بعد — يتوفر حالياً فقط (استوديو ما قبل المباراة)."
         }
 
-    # 2. إذا كانت المباراة جارية أو بين الشوطين (in): يتوفر فقط "قبل المباراة" و"بين الشوطين"، ويُحجب "بعد النهاية"
     if actual_state == "in" and target_phase == "post":
         return {
             "has_studio": False,
@@ -6231,12 +7075,13 @@ def get_ai_pundit_studio_analysis(league_code: str, match_id: str, requested_pha
             "message": "🔒 المباراة لا تزال جارية في أرض الملعب — سيتفعل (استوديو ما بعد النهاية) فور إطلاق صافرة النهاية."
         }
 
-    cache_key = f"ai_studio_v1_{league_code}_{match_id}_{target_phase}_{dossier['home_score']}_{dossier['away_score']}"
+    cache_key = f"ai_studio_v1_{league_code}_{match_id_clean}_{target_phase}_{dossier['home_score']}_{dossier['away_score']}"
     cached_res, is_fresh = get_from_cache(cache_key, ttl=120 if actual_state == "in" else 1800)
     if cached_res and is_fresh:
         return cached_res
 
     base_studio = _build_data_driven_studio_fallback(dossier, target_phase)
+
 
     gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if gemini_key and gemini_key.startswith("AIza"):
@@ -8357,3 +9202,162 @@ def get_live_entity_card_detail(entity_type: str, name: str, extra: str = ""):
     if total_trophies > 0 or wk_data.get("bio"):
         save_to_cache(cache_key, profile)
     return profile
+
+def global_platform_search(query: str):
+    q = (query or "").strip().lower()
+    empty = {"clubs": [], "nations": [], "transfers": [], "news": []}
+    if len(q) < 2:
+        return empty
+
+    clubs, nations, transfers, news = [], [], [], []
+    seen_clubs, seen_nations = set(), set()
+
+    for cache_key, entry in list(_RAM_CACHE.items()):
+        data = entry.get("data") if isinstance(entry, dict) else None
+        if not data:
+            continue
+
+        if cache_key.startswith("standings_v4_") and isinstance(data, list):
+            lg_code = cache_key.replace("standings_v4_", "")
+            for row in data:
+                if not isinstance(row, dict):
+                    continue
+                raw_n = str(row.get("team_name") or "")
+                short_n = str(row.get("short_name") or raw_n)
+                ar_n = _clean_entity_name(short_n) or short_n
+                hay = f"{raw_n} {short_n} {ar_n}".lower()
+                dedup = f"{lg_code}_{row.get('team_id') or short_n.lower()}"
+                if q in hay and dedup not in seen_clubs:
+                    seen_clubs.add(dedup)
+                    clubs.append({
+                        "league_code": lg_code,
+                        "team_id": str(row.get("team_id") or ""),
+                        "raw_name": raw_n,
+                        "name": ar_n,
+                        "crest": row.get("crest") or "",
+                        "rank": row.get("rank", "-"),
+                        "points": row.get("points", 0)
+                    })
+
+        elif cache_key.startswith("world_nations_live_api_") and isinstance(data, list):
+            for n in data:
+                if not isinstance(n, dict):
+                    continue
+                hay = f"{n.get('name', '')} {n.get('raw_name', '')} {n.get('confederation', '')}".lower()
+                nk = str(n.get("raw_name") or n.get("name") or "").lower()
+                if q in hay and nk not in seen_nations:
+                    seen_nations.add(nk)
+                    nations.append({
+                        "name": n.get("name", ""),
+                        "raw_name": n.get("raw_name", ""),
+                        "flag_url": n.get("flag_url", ""),
+                        "confederation": n.get("confederation", "FIFA"),
+                        "rank": n.get("rank", "-")
+                    })
+
+        elif cache_key.startswith("global_mercato_verified_") and isinstance(data, dict):
+            for item in (data.get("transfers") or []) + (data.get("contracts") or []):
+                if not isinstance(item, dict):
+                    continue
+                hay = f"{item.get('name', '')} {item.get('from_club', '')} {item.get('to_club', '')}".lower()
+                if q in hay:
+                    transfers.append({
+                        "id": item.get("id", ""),
+                        "name": item.get("name", ""),
+                        "from_club": item.get("from_club", ""),
+                        "to_club": item.get("to_club", ""),
+                        "status_label": item.get("status_label", "")
+                    })
+
+        elif cache_key == "global_sports_news" and isinstance(data, list):
+            for art in data:
+                if not isinstance(art, dict):
+                    continue
+                hay = f"{art.get('title', '')} {art.get('summary', '')}".lower()
+                if q in hay:
+                    news.append({
+                        "title": art.get("title", ""),
+                        "published_time": art.get("published_time", ""),
+                        "source_url": art.get("source_url", "")
+                    })
+
+    return {
+        "clubs": clubs[:6],
+        "nations": nations[:5],
+        "transfers": transfers[:5],
+        "news": news[:5]
+    }
+
+
+def get_club_recent_results(league_code: str, team_id: str):
+    code = (league_code or "PL").upper()
+    tid = str(team_id or "").strip()
+    if not tid:
+        return []
+
+    cache_key = f"club_recent_v1_{code}_{tid}"
+    cached, is_fresh = get_from_cache(cache_key, ttl=1800)
+    if cached and is_fresh:
+        return cached
+
+    espn_code = LEAGUE_CODES.get(code, {}).get("espn", "eng.1")
+    urls = [
+        f"https://site.api.espn.com/apis/site/v2/sports/soccer/{espn_code}/teams/{tid}/schedule",
+        f"https://site.api.espn.com/apis/site/v2/sports/soccer/all/teams/{tid}/schedule"
+    ]
+
+    events = []
+    for u in urls:
+        data = fetch_json_fast(u, timeout=4.0)
+        if isinstance(data, dict) and isinstance(data.get("events"), list) and data["events"]:
+            events = data["events"]
+            break
+
+    completed = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        comps = ev.get("competitions") or []
+        if not comps or not isinstance(comps[0], dict):
+            continue
+        comp = comps[0]
+        state = comp.get("status", {}).get("type", {}).get("state", "")
+        if state != "post":
+            continue
+
+        competitors = comp.get("competitors") or []
+        my_side, opp_side = None, None
+        for c in competitors:
+            c_tid = str((c.get("team") or {}).get("id") or c.get("id") or "")
+            if c_tid == tid:
+                my_side = c
+            else:
+                opp_side = c
+
+        if not my_side or not opp_side:
+            continue
+
+        my_sc = _safe_int((my_side.get("score") or {}).get("value") if isinstance(my_side.get("score"), dict) else my_side.get("score"), 0)
+        opp_sc = _safe_int((opp_side.get("score") or {}).get("value") if isinstance(opp_side.get("score"), dict) else opp_side.get("score"), 0)
+
+        res_letter = "W" if my_sc > opp_sc else ("L" if my_sc < opp_sc else "D")
+        opp_team = opp_side.get("team") or {}
+        opp_name = _clean_entity_name(opp_team.get("shortDisplayName") or opp_team.get("displayName") or "الخصم")
+        opp_logos = opp_team.get("logos") or []
+        opp_crest = opp_logos[0].get("href", "") if (opp_logos and isinstance(opp_logos[0], dict)) else (opp_team.get("logo") or "")
+
+        completed.append({
+            "sort_date": ev.get("date", ""),
+            "date": (ev.get("date") or "")[:10],
+            "is_home": my_side.get("homeAway") == "home",
+            "opponent": opp_name,
+            "opponent_crest": opp_crest,
+            "score": f"{my_sc} - {opp_sc}",
+            "result": res_letter
+        })
+
+    completed.sort(key=lambda x: x["sort_date"], reverse=True)
+    recent_5 = completed[:5]
+    if recent_5:
+        save_to_cache(cache_key, recent_5)
+    return recent_5

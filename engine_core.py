@@ -12,21 +12,10 @@ import warnings
 import numpy as np
 from scipy.stats import poisson
 
-warnings.filterwarnings("ignore")
 
+# الاعتماد على نموذج Dixon-Coles المعاير بـ Elo و Form بدون خلط بيانات تدريبية عشوائية
 _ML_MODEL = None
-try:
-    import joblib
-    if os.path.exists("football_model.joblib"):
-        _ML_MODEL = joblib.load("football_model.joblib")
-        _ML_MODEL.predict_proba(np.zeros((1, 5)))
-except Exception as e:
-    print(f"⚠️ Notice: Pre-trained joblib model skipped ({e}). Using pure Dixon-Coles.")
-    _ML_MODEL = None
 
-# -------------------------------------------------------------------------
-# 1. القواعد التنظيمية الدقيقة لكل بطولة (التأهل، الملحق، الهبوط، وعدد الجولات)
-# -------------------------------------------------------------------------
 
 # -------------------------------------------------------------------------
 # 1. القواعد التنظيمية الدقيقة لكل بطولة (التأهل، الملحق، الهبوط، وعدد الجولات)
