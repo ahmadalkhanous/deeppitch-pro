@@ -8,6 +8,12 @@ window.activeMatchStatsData = null;
 window.currentMatchEventsCache = [];
 
 window._matchModalToken = 0;
+window._matchModalToken = 0;
+window._activeMatchTab = 'stats';
+window._activeEventsFilter = 'all';
+window._activeLineupMode = null;
+window._liveModalSyncTimer = null;
+window._liveModalSyncBusy = false;
 
 function escHtml(str) {
   return String(str !== undefined && str !== null ? str : '')
@@ -45,6 +51,9 @@ function safeWidth(id, pct) {
 }
 
 window.closeModal = function(modalId) {
+  if (modalId === 'today-match-modal' && typeof stopMatchModalLiveSync === 'function') {
+    stopMatchModalLiveSync();
+  }
   var modal = document.getElementById(modalId);
   if (modal) modal.style.display = 'none';
   document.body.style.overflow = '';
@@ -58,6 +67,8 @@ window.closeModal = function(modalId) {
 // 1. نظام التبديل الموحد بين تبويبات المباراة الخمسة (بإحياء الزخم والتسديدات)
 // =========================================================
 window.switchMatchTab = function(tab) {
+  window._activeMatchTab = tab;
+
   var statsWrapper = document.getElementById('tm-stats-wrapper') || document.getElementById('tm-stats-card');
   var waveTab = document.getElementById('tm-wave-tab');
   var momentumTab = document.getElementById('tm-momentum-tab');
@@ -82,27 +93,34 @@ window.switchMatchTab = function(tab) {
   if (btnEvents) btnEvents.classList.toggle('active', tab === 'events');
   if (btnLineup) btnLineup.classList.toggle('active', tab === 'lineup');
 
- var scrollBody = document.getElementById('tm-modal-scroll-body');
+  var scrollBody = document.getElementById('tm-modal-scroll-body');
   if (scrollBody) scrollBody.scrollTop = 0;
 
   if (tab === 'wave') {
-    loadMatchMomentumWave();
+    loadMatchMomentumWave(false);
   } else if (tab === 'momentum') {
-    loadMatchMomentum();
+    loadAiPunditStudio();
   } else if (tab === 'events') {
-    loadMatchEvents();
+    loadMatchEvents(false);
   } else if (tab === 'lineup') {
-    loadMatchLineup();
+    loadMatchLineup(false);
   }
 };
 
-async function loadMatchMomentumWave() {
+async function loadMatchMomentumWave(silent) {
   var container = document.getElementById('tm-wave-content');
   var m = window.activeMatchModalData;
   if (!container || !m) return;
   var reqToken = window._matchModalToken;
 
-  container.innerHTML = '<div class="loading-state" style="padding:28px 0;">جاري رسم منحنى الزخم الهجومي وخريطة التسديدات...</div>';
+  var scrollBody = document.getElementById('tm-modal-scroll-body');
+  var prevScroll = scrollBody ? scrollBody.scrollTop : 0;
+  var shotPaneBefore = document.getElementById('tm-live-mom-shot-pane');
+  var wasShotActive = Boolean(silent && shotPaneBefore && shotPaneBefore.style.display !== 'none');
+
+  if (!silent) {
+    container.innerHTML = '<div class="loading-state" style="padding:28px 0;">جاري رسم منحنى الزخم الهجومي وخريطة التسديدات...</div>';
+  }
 
   try {
     var res = await fetch('/api/match_momentum/' + encodeURIComponent(m.league_code || 'PL') + '/' + encodeURIComponent(m.id));
@@ -111,28 +129,39 @@ async function loadMatchMomentumWave() {
     var payload = json && json.data ? json.data : null;
 
     if (!payload || !payload.has_momentum) {
-      container.innerHTML =
-        '<div class="dp-empty-state" style="padding:28px 16px;">' +
-          '<div style="color:var(--accent-gold-bright); font-weight:800;">' + escHtml((payload && payload.message) || 'سيتوفر منحنى الزخم وخريطة التسديدات فور انطلاق المباراة.') + '</div>' +
-        '</div>';
+      if (!silent) {
+        container.innerHTML =
+          '<div class="dp-empty-state" style="padding:28px 16px;">' +
+            '<div style="color:var(--accent-gold-bright); font-weight:800;">' + escHtml((payload && payload.message) || 'سيتوفر منحنى الزخم وخريطة التسديدات فور انطلاق المباراة.') + '</div>' +
+          '</div>';
+      }
       return;
     }
 
     if (typeof renderMomentumWidgetHtml === 'function') {
       container.innerHTML = renderMomentumWidgetHtml('tm-live-mom', payload);
+      if (wasShotActive && typeof switchMomentumSubTab === 'function') {
+        switchMomentumSubTab('tm-live-mom', 'shot');
+      }
+      if (silent && scrollBody) scrollBody.scrollTop = prevScroll;
     }
   } catch (e) {
-    container.innerHTML = '<div class="loading-state" style="color:var(--accent-red);">تعذر تحميل منحنى الزخم حالياً.</div>';
+    if (!silent) {
+      container.innerHTML = '<div class="loading-state" style="color:var(--accent-red);">تعذر تحميل منحنى الزخم حالياً.</div>';
+    }
   }
 }
 
-// إغلاق النوافذ المنبثقة بزر Escape على سطح المكتب
+// إغلاق النوافذ المنبثقة بزر Escape مع إيقاف التزامن الحي بأمان
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') {
     document.querySelectorAll('.modal-overlay').forEach(function(el) {
       if (el.style.display === 'flex') {
-        el.style.display = 'none';
-        document.body.style.overflow = '';
+        if (el.id) window.closeModal(el.id);
+        else {
+          el.style.display = 'none';
+          document.body.style.overflow = '';
+        }
       }
     });
   }
@@ -145,10 +174,10 @@ window.currentStudioPhase = 'auto';
 
 window.switchStudioPhase = function(phaseKey) {
   window.currentStudioPhase = phaseKey;
-  loadMatchMomentum(phaseKey);
+  loadAiPunditStudio(phaseKey);
 };
 
-async function loadMatchMomentum(requestedPhase) {
+async function loadAiPunditStudio(requestedPhase) {
   var container = document.getElementById('tm-momentum-content');
   var m = window.activeMatchModalData;
   if (!container || !m) return;
@@ -300,8 +329,12 @@ window.submitStudioPunditQuestion = async function() {
         question: qText
       })
     });
-    var json = await res.json();
-   if (json && json.status === 'success' && json.data) {
+    var json = await res.json().catch(function() { return {}; });
+    if (res.status === 429) {
+      replyBox.innerHTML = '<span style="color:var(--accent-gold-bright);">⏳ ' + escHtml(json.detail || 'تجاوزت الحد المسموح مؤقتاً، يرجى الانتظار دقيقة.') + '</span>';
+      return;
+    }
+    if (json && json.status === 'success' && json.data) {
       replyBox.innerHTML =
         '<div style="font-weight:900; color:var(--accent-green); margin-bottom:4px;">🎙️ ' + escHtml(json.data.pundit_name) + ' (' + escHtml(json.data.pundit_role) + '):</div>' +
         '<div>' + escHtml(json.data.reply || '').replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--text);">$1</strong>') + '</div>';
@@ -587,13 +620,18 @@ async function fetchLineupDirectlyFromESPN(m) {
   return null;
 }
 
-async function loadMatchLineup() {
+async function loadMatchLineup(silent) {
   var container = document.getElementById('tm-lineup-content');
   var m = window.activeMatchModalData;
   if (!container || !m) return;
   var reqToken = window._matchModalToken;
 
-  container.innerHTML = '<div class="loading-state" style="padding:28px 0;">جاري جلب التشكيلة وأرقام اللاعبين...</div>';
+  var scrollBody = document.getElementById('tm-modal-scroll-body');
+  var prevScroll = scrollBody ? scrollBody.scrollTop : 0;
+
+  if (!silent) {
+    container.innerHTML = '<div class="loading-state" style="padding:28px 0;">جاري جلب التشكيلة وأرقام اللاعبين...</div>';
+  }
 
   var data = null;
   if (window.activeMatchStatsData && window.activeMatchStatsData.lineups && window.activeMatchStatsData.lineups.has_lineups) {
@@ -732,22 +770,25 @@ var headerBanner = showRatings
       ? '<div class="dp-pitch-notice">التشكيلة الرسمية المعتمدة للمباراة</div>'
       : '<div class="dp-pitch-notice is-expected">التشكيلة المتوقعة (بناءً على آخر مباراة رسمية للفريقين)</div>');
 
-  var defaultMode = (window.innerWidth <= 768) ? 'home' : 'both';
+  var defaultMode = window._activeLineupMode || ((window.innerWidth <= 768) ? 'home' : 'both');
   var switchBar =
     '<div class="dp-subtabs dp-lineup-switch">' +
       '<button type="button" class="dp-subtab-btn ' + (defaultMode === 'home' ? 'active' : '') + '" data-lmode="home" onclick="switchLineupTeamView(\'home\')">' + escHtml(data.home.team_name) + '</button>' +
-      '<button type="button" class="dp-subtab-btn" data-lmode="away" onclick="switchLineupTeamView(\'away\')">' + escHtml(data.away.team_name) + '</button>' +
+      '<button type="button" class="dp-subtab-btn ' + (defaultMode === 'away' ? 'active' : '') + '" data-lmode="away" onclick="switchLineupTeamView(\'away\')">' + escHtml(data.away.team_name) + '</button>' +
       '<button type="button" class="dp-subtab-btn ' + (defaultMode === 'both' ? 'active' : '') + '" data-lmode="both" onclick="switchLineupTeamView(\'both\')">كلا الفريقين</button>' +
     '</div>';
 
   container.innerHTML =
     headerBanner +
     switchBar +
-    '<div id="dp-lineup-home-wrap">' + renderTeamPitch(data.home, true) + '</div>' +
+    '<div id="dp-lineup-home-wrap" style="' + (defaultMode === 'away' ? 'display:none;' : '') + '">' + renderTeamPitch(data.home, true) + '</div>' +
     '<div id="dp-lineup-away-wrap" style="' + (defaultMode === 'home' ? 'display:none;' : '') + '">' + renderTeamPitch(data.away, false) + '</div>';
+
+  if (silent && scrollBody) scrollBody.scrollTop = prevScroll;
 }
 
 window.switchLineupTeamView = function(mode) {
+  window._activeLineupMode = mode;
   var hWrap = document.getElementById('dp-lineup-home-wrap');
   var aWrap = document.getElementById('dp-lineup-away-wrap');
   if (hWrap) hWrap.style.display = (mode === 'away') ? 'none' : 'block';
@@ -898,15 +939,217 @@ function renderStatsIntoModal(statsObj, fallbackObj) {
   safeWidth('tm-bar-cards-a', cardBars[1]);
 }
 
+function stopMatchModalLiveSync() {
+  if (window._liveModalSyncTimer) {
+    clearInterval(window._liveModalSyncTimer);
+    window._liveModalSyncTimer = null;
+  }
+  window._liveModalSyncBusy = false;
+  var pill = document.getElementById('tm-live-sync-pill');
+  if (pill) pill.remove();
+}
+
+function shouldAutoSyncMatch(m) {
+  if (!m) return false;
+  if (m.state === 'in' || m.is_live) return true;
+  if (m.state === 'pre' && m.kickoff_iso) {
+    var kickMs = new Date(m.kickoff_iso).getTime();
+    if (!isNaN(kickMs)) {
+      var diffMin = (kickMs - Date.now()) / 60000;
+      // إذا تبقى أقل من 15 دقيقة على الانطلاق أو مرت دقائق قليلة، نراقب صافرة البداية تلقائياً
+      if (diffMin <= 15 && diffMin >= -130) return true;
+    }
+  }
+  return false;
+}
+
+function setLiveSyncPillVisible(isVisible) {
+  var infoWrap = document.querySelector('.dp-mc-modal-league-info');
+  if (!infoWrap) return;
+  var pill = document.getElementById('tm-live-sync-pill');
+  if (isVisible) {
+    if (!pill) {
+      pill = document.createElement('span');
+      pill.id = 'tm-live-sync-pill';
+      pill.className = 'dp-live-sync-pill';
+      pill.innerHTML = '<span class="live-dot-pulse"></span><span>تزامن حي</span>';
+      infoWrap.appendChild(pill);
+    }
+  } else if (pill) {
+    pill.remove();
+  }
+}
+
+function syncBackgroundMatchRow(m) {
+  if (!m || !m.id) return;
+  var rows = document.querySelectorAll('.dp-match-row[data-match-id]');
+  rows.forEach(function(row) {
+    if (row.getAttribute('data-match-id') !== String(m.id)) return;
+    var scorePill = row.querySelector('.dp-row-score-pill');
+    var statusEl = row.querySelector('.dp-row-status');
+    row.classList.toggle('is-live', Boolean(m.is_live));
+    if (scorePill && m.state !== 'pre') {
+      scorePill.textContent = m.home_score + ' - ' + m.away_score;
+      scorePill.classList.toggle('is-live', Boolean(m.is_live));
+      scorePill.classList.remove('is-pre');
+    }
+    if (statusEl && m.status_text) {
+      statusEl.textContent = m.status_text;
+      statusEl.classList.toggle('is-live', Boolean(m.is_live));
+    }
+  });
+}
+
+function triggerModalGoalFlash(hTeam, aTeam, newH, newA) {
+  var scoreEl = document.getElementById('tm-score');
+  if (scoreEl) {
+    scoreEl.classList.remove('dp-score-goal-flash');
+    void scoreEl.offsetWidth;
+    scoreEl.classList.add('dp-score-goal-flash');
+  }
+
+  var scoreboard = document.querySelector('.dp-mc-scoreboard');
+  if (!scoreboard) return;
+  var oldAlert = document.getElementById('tm-goal-flash-banner');
+  if (oldAlert) oldAlert.remove();
+
+  var banner = document.createElement('div');
+  banner.id = 'tm-goal-flash-banner';
+  banner.className = 'dp-goal-alert-bar';
+  banner.textContent = '⚽ هدف جديد الآن! ' + hTeam + ' (' + newH + ' - ' + newA + ') ' + aTeam;
+  scoreboard.parentElement.insertBefore(banner, scoreboard);
+
+  setTimeout(function() {
+    if (banner && banner.parentNode) banner.remove();
+  }, 6000);
+}
+
+async function silentSyncOpenMatchModal(modalToken) {
+  if (window._liveModalSyncBusy) return;
+  if (document.hidden) return;
+  var modal = document.getElementById('today-match-modal');
+  var m = window.activeMatchModalData;
+  if (!modal || modal.style.display !== 'flex' || !m || modalToken !== window._matchModalToken) {
+    stopMatchModalLiveSync();
+    return;
+  }
+
+  window._liveModalSyncBusy = true;
+  try {
+    var res = await fetch('/api/match_stats/' + encodeURIComponent(m.league_code || 'PL') + '/' + encodeURIComponent(m.id) + '?_t=' + Date.now());
+    if (!res.ok || modalToken !== window._matchModalToken) return;
+    var json = await res.json();
+    if (modalToken !== window._matchModalToken) return;
+
+    var payload = (json && json.data) ? json.data : json;
+    if (!payload) return;
+
+    var prevState = m.state;
+    var prevScoreStr = (m.state === 'pre') ? '' : (String(m.home_score) + '-' + String(m.away_score));
+
+    // تحديث القناة والمعلق إذا تم التحقق منهما
+    if (payload.broadcast) {
+      var bc = payload.broadcast;
+      if (bc.channel) {
+        m.channel = bc.channel;
+        m.channel_verified = Boolean(bc.channel_verified);
+        safeText('tm-info-channel', bc.channel);
+      }
+      if (bc.commentator) {
+        m.commentator = bc.commentator;
+        m.commentator_verified = Boolean(bc.commentator_verified);
+        safeText('tm-info-comm', bc.commentator + (bc.commentator_verified ? ' ✓' : ''));
+      }
+    }
+
+    var newState = payload.state || m.state;
+    var localKickoff = (typeof formatLocalKickoff === 'function')
+      ? formatLocalKickoff(m.kickoff_iso, m.kickoff_time, true)
+      : (m.kickoff_time || '--:--');
+
+    if (newState === 'in' || newState === 'post') {
+      var newH = (payload.home_score !== undefined && payload.home_score !== '-') ? String(payload.home_score) : String(m.home_score);
+      var newA = (payload.away_score !== undefined && payload.away_score !== '-') ? String(payload.away_score) : String(m.away_score);
+      var newStatusTxt = payload.status_text || (newState === 'post' ? 'انتهت' : m.status_text);
+
+      m.state = newState;
+      m.is_live = (newState === 'in');
+      m.home_score = newH;
+      m.away_score = newA;
+      m.status_text = newStatusTxt;
+
+      safeText('tm-score', newH + ' - ' + newA);
+      safeText('tm-status-text', newStatusTxt + ' • 🕒 ' + localKickoff);
+      syncBackgroundMatchRow(m);
+
+      // إذا انطلقت المباراة الآن من حالة pre -> in نفعّل الإحصائيات فوراً
+      if (prevState === 'pre') {
+        togglePreMatchStatsNotice(false, localKickoff);
+      }
+
+      // وميض لحظي عند تسجيل هدف جديد أثناء فتح النافذة
+      var newScoreStr = newH + '-' + newA;
+      if (prevScoreStr && prevScoreStr !== newScoreStr && prevScoreStr !== '---') {
+        triggerModalGoalFlash(m.home_team, m.away_team, newH, newA);
+      }
+
+      if (payload.has_stats || payload.home) {
+        window.activeMatchStatsData = payload;
+        renderStatsIntoModal(payload, buildFallbackStatsFromMatch(m));
+      }
+
+      // تحديث صامت للتبويب المفتوح حالياً فقط بدون إزعاج أو فقدان التمرير
+      if (window._activeMatchTab === 'events') {
+        loadMatchEvents(true);
+      } else if (window._activeMatchTab === 'wave') {
+        loadMatchMomentumWave(true);
+      } else if (window._activeMatchTab === 'lineup' && payload.lineups && payload.lineups.has_lineups) {
+        loadMatchLineup(true);
+      }
+
+      // إيقاف التزامن تلقائياً فور انتهاء المباراة
+      if (newState === 'post') {
+        stopMatchModalLiveSync();
+      }
+    }
+  } catch (e) {
+  } finally {
+    window._liveModalSyncBusy = false;
+  }
+}
+
+function startMatchModalLiveSyncIfNeeded(m, modalToken) {
+  stopMatchModalLiveSync();
+  if (!shouldAutoSyncMatch(m)) return;
+
+  setLiveSyncPillVisible(true);
+  window._liveModalSyncTimer = setInterval(function() {
+    silentSyncOpenMatchModal(modalToken);
+  }, 25000);
+}
+
+// تحديث فوري عند عودة المستخدم لتبويب المتصفح أثناء فتح مباراة مباشرة
+document.addEventListener('visibilitychange', function() {
+  if (!document.hidden && window._liveModalSyncTimer && window.activeMatchModalData) {
+    silentSyncOpenMatchModal(window._matchModalToken);
+  }
+});
+
 window.openTodayMatchModal = async function(idx) {
   try {
     var matches = window.currentTodayMatches || [];
     var m = matches[idx];
     if (!m) return;
 
-   var modalToken = ++window._matchModalToken;
+    stopMatchModalLiveSync();
+    var oldAlert = document.getElementById('tm-goal-flash-banner');
+    if (oldAlert) oldAlert.remove();
+
+    var modalToken = ++window._matchModalToken;
     window.activeMatchModalData = m;
     window.activeMatchStatsData = null;
+    window._activeEventsFilter = 'all';
+    window._activeLineupMode = null;
     window.switchMatchTab('stats');
 
     var modal = document.getElementById('today-match-modal');
@@ -919,7 +1162,7 @@ window.openTodayMatchModal = async function(idx) {
       ? formatLocalKickoff(m.kickoff_iso, m.kickoff_time, true)
       : (m.kickoff_time || '--:--');
 
-   safeHtml(
+    safeHtml(
       'tm-league-badge',
       (typeof renderLeagueLogoHtml === 'function'
         ? renderLeagueLogoHtml(m.league_code, m.league_flag || '⚽', 'size-xs', m.league_logo)
@@ -945,6 +1188,8 @@ window.openTodayMatchModal = async function(idx) {
       renderStatsIntoModal(m.stats || fallbackStats, fallbackStats);
     }
 
+    startMatchModalLiveSyncIfNeeded(m, modalToken);
+
     var res = await fetch('/api/match_stats/' + (m.league_code || 'PL') + '/' + m.id);
     if (modalToken !== window._matchModalToken) return;
     if (res.ok) {
@@ -952,7 +1197,6 @@ window.openTodayMatchModal = async function(idx) {
       if (modalToken !== window._matchModalToken) return;
       var statsPayload = (json && json.data) ? json.data : json;
 
-      // تحديث القناة والمعلق فوراً إذا تم التحقق منهما عبر البحث الذكي عند الطلب
       if (statsPayload && statsPayload.broadcast) {
         var bc = statsPayload.broadcast;
         if (bc.channel) {
@@ -967,16 +1211,32 @@ window.openTodayMatchModal = async function(idx) {
         }
       }
 
-      if (isPreMatch || (statsPayload && statsPayload.state === 'pre' && !m.is_live)) {
+      if (statsPayload && (statsPayload.state === 'in' || statsPayload.state === 'post')) {
+        if (statsPayload.home_score !== undefined && statsPayload.home_score !== '-') {
+          m.home_score = String(statsPayload.home_score);
+          m.away_score = String(statsPayload.away_score);
+          safeText('tm-score', m.home_score + ' - ' + m.away_score);
+        }
+        if (statsPayload.status_text) {
+          m.status_text = statsPayload.status_text;
+          safeText('tm-status-text', m.status_text + ' • 🕒 ' + localKickoff);
+        }
+        m.state = statsPayload.state;
+        m.is_live = (statsPayload.state === 'in');
+        syncBackgroundMatchRow(m);
+        if (m.state === 'post') stopMatchModalLiveSync();
+      }
+
+      if (isPreMatch && (!statsPayload || statsPayload.state === 'pre')) {
         togglePreMatchStatsNotice(true, localKickoff);
         return;
       }
       if (statsPayload && (statsPayload.has_stats || statsPayload.home)) {
+        togglePreMatchStatsNotice(false, localKickoff);
         window.activeMatchStatsData = statsPayload;
         renderStatsIntoModal(statsPayload, fallbackStats);
       }
     }
-
   } catch (err) {
     console.warn("تم الاعتماد على الإحصائيات المدمجة:", err);
   }
@@ -1060,7 +1320,7 @@ window.openModal = function(idx) {
     var boost = document.getElementById('sb-home-boost');
     if (redH) redH.checked = false;
     if (redA) redA.checked = false;
-    if (boost) boost.value = 1.24;
+    if (boost) boost.value = 1.20;
 
     var aiResp = document.getElementById('ai-response-box');
     if (aiResp) {
@@ -1104,10 +1364,10 @@ window.recalculateSandbox = function() {
   var f = currentModalFixture;
   var redH = document.getElementById('sb-red-home') ? document.getElementById('sb-red-home').checked : false;
   var redA = document.getElementById('sb-red-away') ? document.getElementById('sb-red-away').checked : false;
-  var boost = document.getElementById('sb-home-boost') ? parseFloat(document.getElementById('sb-home-boost').value) : 1.24;
+  var boost = document.getElementById('sb-home-boost') ? parseFloat(document.getElementById('sb-home-boost').value) : 1.20;
 
   safeText('sb-boost-val', boost.toFixed(2) + 'x');
-  var homeXg = (f.home.xg || 1.5) * (boost / 1.24);
+  var homeXg = (f.home.xg || 1.5) * (boost / 1.20);
   var awayXg = (f.away.xg || 1.1);
 
   if (redH) { homeXg *= 0.62; awayXg *= 1.18; }
@@ -1116,7 +1376,7 @@ window.recalculateSandbox = function() {
   homeXg = Math.max(0.25, Math.min(4.2, homeXg));
   awayXg = Math.max(0.25, Math.min(3.8, awayXg));
 
-  // بناء مصفوفة بواسون المعدلة بديكسون-كولز (0..5 أهداف)
+  // بناء مصفوفة بواسون المعدلة بديكسون-كولز (0..5 أهداف) بنفس معاملات السيرفر
   var maxG = 5;
   var mat = [];
   var sumMat = 0;
@@ -1125,7 +1385,7 @@ window.recalculateSandbox = function() {
     for (var a = 0; a <= maxG; a++) {
       var pPoi = (Math.exp(-homeXg) * Math.pow(homeXg, h) / factorial(h)) *
                  (Math.exp(-awayXg) * Math.pow(awayXg, a) / factorial(a));
-      var tau = dixonColesTauJS(h, a, homeXg, awayXg, -0.10);
+      var tau = dixonColesTauJS(h, a, homeXg, awayXg, -0.11);
       mat[h][a] = pPoi * tau;
       sumMat += mat[h][a];
     }
@@ -1200,7 +1460,7 @@ window.resetSandbox = function() {
   var boost = document.getElementById('sb-home-boost');
   if (redH) redH.checked = false;
   if (redA) redA.checked = false;
-  if (boost) boost.value = 1.24;
+  if (boost) boost.value = 1.20;
   window.recalculateSandbox();
 };
 
@@ -1241,6 +1501,11 @@ window.askAiPundit = async function() {
       body: JSON.stringify(payload)
     });
 
+    if (res.status === 429) {
+      var limData = await res.json().catch(function() { return {}; });
+      box.innerText = '⏳ ' + (limData.detail || 'تجاوزت الحد المسموح مؤقتاً، يرجى المحاولة بعد دقيقة.');
+      return;
+    }
     if (res.ok) {
       var data = await res.json();
       var txt = escHtml(data.analysis || 'تشير مؤشرات الأداء إلى تكافؤ نسبي مع أفضلية طفيفة للمضيف.');
@@ -1249,10 +1514,11 @@ window.askAiPundit = async function() {
       throw new Error('Fallback');
     }
   } catch (e) {
+    var favTeam = escHtml(f.home.prob >= f.away.prob ? f.home.short : f.away.short);
     box.innerHTML = 'تشير النمذجة التكتيكية إلى أفضلية نسبية لـ <strong>' +
-      (f.home.prob >= f.away.prob ? f.home.short : f.away.short) +
-      '</strong> بناءً على فارق الأهداف المتوقعة (' + f.home.xg + ' مقابل ' + f.away.xg + ').';
-  } finally {
+      favTeam +
+      '</strong> بناءً على فارق الأهداف المتوقعة (' + escHtml(f.home.xg) + ' مقابل ' + escHtml(f.away.xg) + ').';
+  }finally {
     btn.disabled = false;
     btn.innerText = '✨ استشر المحلل الآن';
   }
@@ -1270,7 +1536,11 @@ window.openNewspaperModal = async function() {
     try {
       var league = (typeof activeLeague !== 'undefined' && activeLeague) ? activeLeague : 'PL';
       var res = await fetch('/api/ai_newspaper/' + league);
-      var data = await res.json();
+      var data = await res.json().catch(function() { return {}; });
+      if (res.status === 429) {
+        body.innerHTML = '<div style="color:var(--accent-gold-bright); text-align:center; padding:18px; font-weight:700;">⏳ ' + escHtml(data.detail || 'تجاوزت الحد المسموح مؤقتاً، يرجى الانتظار دقيقة.') + '</div>';
+        return;
+      }
 
       var rawContent = escHtml(data.content || '');
       var formattedContent = rawContent

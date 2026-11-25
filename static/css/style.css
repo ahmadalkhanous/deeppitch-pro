@@ -71,7 +71,7 @@ body {
   background-attachment: fixed;
   color: var(--text);
   min-height: 100vh;
-  overflow-x: hidden;
+  overflow-x: clip;
   line-height: 1.55;
   padding: 16px 16px calc(48px + env(safe-area-inset-bottom)) 16px;
   padding-top: calc(16px + env(safe-area-inset-top));
@@ -2829,10 +2829,6 @@ header p {
   background: var(--accent-red-soft);
 }
 
-.dp-sheet-handle {
-  padding: 0 !important;
-}
-
 .modal-content:not(.dp-mc-modal-shell) > h3,
 .modal-content:not(.dp-mc-modal-shell) > .close-btn + div:not(#mercato-modal-body):not(#cards-modal-body) {
   padding-left: 44px;
@@ -2840,6 +2836,7 @@ header p {
 }
 
 #global-search-modal .modal-content > h3,
+#news-reader-modal .modal-content > h3,
 #news-reader-modal .modal-content > .close-btn + div {
   padding-right: 0;
 }
@@ -3746,154 +3743,7 @@ header p {
   border-color: var(--accent-green);
 }
 
-/* Featured Match of the Day Hero (Compact Sidebar & Mobile Top) */
-.dp-hero-match {
-  background: linear-gradient(145deg, #152036 0%, #10182a 65%, #0f1c26 100%);
-  border: 1px solid var(--card-border-strong);
-  border-radius: var(--radius-lg);
-  padding: 15px 16px;
-  cursor: pointer;
-  position: relative;
-  overflow: hidden;
-  transition: var(--transition);
-  box-shadow: var(--shadow-sm);
-}
 
-.dp-hero-match::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 3px;
-  background: linear-gradient(90deg, var(--accent-green), var(--accent-cyan));
-}
-
-.dp-hero-match.is-live::before {
-  background: linear-gradient(90deg, var(--accent-red), #f97316);
-}
-
-.dp-hero-match:hover {
-  border-color: rgba(16, 185, 129, 0.45);
-  transform: translateY(-2px);
-}
-
-.dp-hero-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  font-size: 0.74rem;
-}
-
-.dp-hero-kicker {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--accent-gold-bright);
-  font-weight: 800;
-}
-
-.dp-hero-league {
-  color: var(--muted);
-  font-weight: 700;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 55%;
-}
-
-.dp-hero-body {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
-.dp-hero-team {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.dp-hero-team img {
-  width: 46px;
-  height: 46px;
-  object-fit: contain;
-  filter: drop-shadow(0 3px 8px rgba(0, 0, 0, 0.35));
-}
-
-.dp-hero-team-name {
-  font-size: 0.88rem;
-  font-weight: 800;
-  color: var(--text);
-  max-width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.dp-hero-center {
-  text-align: center;
-  min-width: 82px;
-}
-
-.dp-hero-score {
-  font-size: 1.55rem;
-  font-weight: 900;
-  letter-spacing: 1px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.1;
-  color: var(--text);
-}
-
-.dp-hero-score.is-pre {
-  color: var(--accent-gold-bright);
-  font-size: 1.3rem;
-}
-
-.dp-hero-score.is-live {
-  color: var(--accent-red);
-}
-
-.dp-hero-sub {
-  font-size: 0.7rem;
-  color: var(--muted);
-  margin-top: 3px;
-  font-weight: 700;
-}
-
-.dp-hero-sub.is-live {
-  color: var(--accent-red);
-}
-
-.dp-hero-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  padding-top: 9px;
-  border-top: 1px solid var(--card-border);
-  font-size: 0.74rem;
-}
-
-.dp-hero-meta-txt {
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-weight: 600;
-}
-
-.dp-hero-cta {
-  color: var(--accent-green);
-  font-weight: 800;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
 
 /* League Accordion Card & Clean Compact Match Rows */
 .dp-league-card {
@@ -4184,10 +4034,9 @@ header p {
     display: contents;
   }
   .dp-mc-header-card { order: 1; margin-bottom: 0; }
-  #today-featured-hero { order: 2; }
-  #today-filters-bar { order: 3; }
-  #today-matches-container { order: 4; }
-  #today-highlights-strip { order: 5; }
+  #today-filters-bar { order: 2; }
+  #today-matches-container { order: 3; }
+  #today-highlights-strip { order: 4; }
 }
 
 @media (max-width: 600px) {
@@ -5189,9 +5038,6 @@ header p {
   background: rgba(255, 255, 255, 0.92);
 }
 
-[data-theme="light"] .dp-hero-match {
-  background: linear-gradient(135deg, #ffffff 0%, #f8fafc 60%, #ecfdf5 100%);
-}
 
 [data-theme="light"] .dp-match-row {
   border-bottom-color: rgba(15, 23, 42, 0.07);
@@ -5606,4 +5452,233 @@ header p {
   background: #ffffff;
   border-color: var(--card-border-strong);
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+
+/* ==========================================================================
+   Phase 3 Fixes: Unified Modal Panels, Mobile Viewport (dvh), Sticky Tables,
+   Narrow Screen Spacing (360px), Quiz/Mercato Mobile & Light Mode Contrast
+   ========================================================================== */
+
+/* 1. صناديق داخلية موحدة للوضعين الليلي والنهاري داخل النوافذ */
+.dp-modal-panel {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  padding: 13px 14px;
+}
+
+.dp-modal-subpanel {
+  background: var(--surface-inset);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  padding: 9px 11px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+/* 2. دعم dvh على متصفحات iOS Safari و Android Chrome لمنع اقتصاص أسفل النوافذ */
+.modal-content {
+  max-height: 90vh;
+  max-height: 90dvh;
+}
+
+.dp-mc-modal-shell {
+  height: 88vh;
+  height: 88dvh;
+  max-height: 88dvh;
+}
+
+@media (max-width: 768px) {
+  .modal-content {
+    max-height: 92vh;
+    max-height: 92dvh;
+  }
+
+  .dp-mc-modal-shell {
+    height: 94vh;
+    height: 94dvh;
+    max-height: 94dvh;
+  }
+
+  .scout-drawer {
+    height: 64vh;
+    height: 64dvh;
+    max-height: calc(100dvh - 140px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  }
+
+  /* 3. ضبط عرض العمود المثبت في جداول الترتيب وتثبيت فواصل المجموعات عند التمرير */
+  .styled-table th:nth-child(2),
+  .styled-table td:nth-child(2):not([colspan]) {
+    max-width: 136px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .styled-table td.team-col-cell .team-title-sm {
+    display: inline-block;
+    max-width: 82px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+  }
+
+  .dp-group-divider-wrap {
+    position: sticky;
+    right: 10px;
+    max-width: calc(100vw - 44px);
+  }
+}
+
+/* 4. توسيع مساحة عرض أسماء الفرق في صفوف المباريات على الهواتف */
+@media (max-width: 600px) {
+  .dp-match-row {
+    grid-template-columns: minmax(0, 1fr) 64px minmax(0, 1fr);
+    padding: 10px 7px;
+    gap: 4px;
+  }
+
+  .dp-row-side {
+    gap: 5px;
+  }
+
+  .dp-row-team-name {
+    font-size: 0.79rem;
+  }
+
+  .dp-row-fav {
+    font-size: 0.8rem;
+    padding: 4px 2px;
+    margin: 0;
+  }
+
+  .dp-row-score-pill {
+    min-width: 54px;
+    padding: 3px 5px;
+    font-size: 0.81rem;
+  }
+}
+
+/* 5. خيارات المسابقة بعمود واحد + بنود الميركاتو عمودية على الشاشات الضيقة */
+@media (max-width: 480px) {
+  .quiz-options-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .t-term-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .t-term-val {
+    width: 100%;
+  }
+}
+
+/* 6. منع تزاحم الشريط العلوي وخطط الـ 5 مدافعين على هواتف 360px */
+@media (max-width: 420px) {
+  .dp-brand {
+    gap: 7px;
+  }
+
+  .dp-brand-title {
+    font-size: 0.9rem;
+  }
+
+  .dp-brand-title span {
+    display: none;
+  }
+
+  .dp-topbar-actions {
+    gap: 4px;
+  }
+
+  .dp-icon-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .dp-pitch-circle {
+    width: 27px;
+    height: 27px;
+    font-size: 0.7rem;
+    border-width: 2px;
+  }
+
+  .dp-pitch-name {
+    font-size: 0.6rem;
+    padding: 1px 3px;
+  }
+}
+
+/* 7. تحسين تباين الوضع النهاري للنصوص الصفراء والأقسام الداخلية */
+[data-theme="light"] .container :not(.fifa-fut-card):not(.dp-pitch-board) [style*="color:#ffd600"],
+[data-theme="light"] .container :not(.fifa-fut-card):not(.dp-pitch-board) [style*="color: #ffd600"],
+[data-theme="light"] .modal-content [style*="color:#ffd600"],
+[data-theme="light"] .modal-content [style*="color: #ffd600"] {
+  color: var(--accent-gold-bright) !important;
+}
+
+[data-theme="light"] .container [style*="background:#1a233a"] {
+  background: var(--surface-inset) !important;
+}
+
+/* ==========================================================================
+   Phase 4: Live Modal Auto-Sync Pill, Goal Flash Animation & Smooth Bars
+   ========================================================================== */
+.dp-live-sync-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--accent-green-soft);
+  border: 1px solid rgba(16, 185, 129, 0.45);
+  color: var(--accent-green);
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  font-size: 0.68rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.dp-live-sync-pill .live-dot-pulse {
+  background: var(--accent-green);
+}
+
+.dp-goal-alert-bar {
+  background: var(--accent-green-soft);
+  border: 1px solid var(--accent-green);
+  color: var(--accent-green);
+  text-align: center;
+  font-size: 0.8rem;
+  font-weight: 900;
+  padding: 6px 12px;
+  border-radius: 10px;
+  margin-bottom: 8px;
+  animation: dpGoalSlideIn 0.25s ease;
+}
+
+@keyframes dpGoalSlideIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes dpScoreFlash {
+  0% { transform: scale(1); color: var(--text); }
+  25% { transform: scale(1.22); color: var(--accent-green); }
+  60% { transform: scale(1.1); color: var(--accent-gold-bright); }
+  100% { transform: scale(1); color: var(--text); }
+}
+
+.dp-score-goal-flash {
+  animation: dpScoreFlash 1.2s ease;
+}
+
+.dp-bar-h,
+.dp-bar-a,
+#tm-bar-cards-h,
+#tm-bar-cards-a {
+  transition: width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
 }

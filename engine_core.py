@@ -349,30 +349,56 @@ def generate_h2h_history(home_short: str, away_short: str, home_elo: float, away
 # -------------------------------------------------------------------------
 # 5. محاكي نهاية الموسم (Monte Carlo) المتكيف مع قواعد كل دوري و UCL
 # -------------------------------------------------------------------------
-def simulate_season_outcomes(league_code: str, standings_data: list, num_sims: int = 1500) -> list:
+# -------------------------------------------------------------------------
+# 5. محاكي نهاية الموسم (Monte Carlo) الموحد للدوريات والمجموعات والبطولات القارية
+# -------------------------------------------------------------------------
+def simulate_season_outcomes(
+    league_code: str,
+    standings_data: list,
+    num_sims: int = 1500,
+    competition_rules: dict = None
+) -> list:
     if not standings_data or len(standings_data) < 4:
         return []
 
-    rules = get_league_rules(league_code)
+    code = (league_code or "PL").upper()
+    eng_rules = get_league_rules(code)
     total_teams = len(standings_data)
-    total_games = rules["total_games"]
-    top_zone_count = len(rules["ucl"])  # 8 في دوري الأبطال، 4 في الدوريات الكبرى، 3/2 في غيرها
-    rel_zone_count = len(rules["rel"]) + len(rules["rel_playoff"])  # 12 في UCL، 3 أو 4 في الدوريات
 
-    teams = []
+    teams_data = []
     for t in standings_data:
-        gp = max(1, t["played"])
-        rem_games = max(0, total_games - gp)
-        gf_rate = max(0.5, t["gf"] / gp)
-        ga_rate = max(0.5, t["ga"] / gp)
-        pts_rate = t["points"] / gp
+        played_raw = max(0, int(t.get("played") or 0))
+        lvl = t.get("level_code", "")
+        grp_name = t.get("group_name", "")
 
-        teams.append({
-            "name": t["short_name"],
-            "crest": t["crest"],
-            "current_pts": t["points"],
-            "current_gd": t["gd"],
-            "played": gp,
+        if code == "UNL":
+            t_games = 4 if lvl == "D" else 6
+        elif competition_rules:
+            t_games = int(competition_rules.get("total_games", 8))
+        else:
+            t_games = int(eng_rules.get("total_games", (total_teams - 1) * 2))
+
+        rem_games = max(0, t_games - played_raw)
+
+        if played_raw > 0:
+            gf_rate = max(0.45, float(t.get("gf", 0)) / played_raw)
+            ga_rate = max(0.45, float(t.get("ga", 0)) / played_raw)
+            pts_rate = float(t.get("points", 0)) / played_raw
+        else:
+            # معدلات متوازنة قبل انطلاق أول جولة في الموسم
+            gf_rate, ga_rate, pts_rate = 1.35, 1.35, 1.35
+
+        teams_data.append({
+            "name": t.get("raw_name") or t.get("team_name") or t.get("short_name", "Team"),
+            "short_name": t.get("short_name") or t.get("team_name", "Team"),
+            "group_name": grp_name,
+            "level_code": lvl,
+            "zone": t.get("zone", "safe"),
+            "status_badge": t.get("status_badge", ""),
+            "crest": t.get("crest", ""),
+            "current_pts": int(t.get("points") or 0),
+            "current_gd": int(t.get("gd") or 0),
+            "played": played_raw,
             "remaining": rem_games,
             "gf_rate": gf_rate,
             "ga_rate": ga_rate,
@@ -383,52 +409,117 @@ def simulate_season_outcomes(league_code: str, standings_data: list, num_sims: i
             "total_sim_pts": 0.0
         })
 
-    cur_pts = np.array([t["current_pts"] for t in teams], dtype=float)
-    cur_gd = np.array([t["current_gd"] for t in teams], dtype=float)
-    rem_arr = np.array([t["remaining"] for t in teams], dtype=int)
-    gf_rates = np.array([t["gf_rate"] for t in teams], dtype=float)
-    ga_rates = np.array([t["ga_rate"] for t in teams], dtype=float)
-    pts_rates = np.array([t["pts_rate"] for t in teams], dtype=float)
+    cur_pts = np.array([t["current_pts"] for t in teams_data], dtype=float)
+    cur_gd = np.array([t["current_gd"] for t in teams_data], dtype=float)
+    rem_arr = np.array([t["remaining"] for t in teams_data], dtype=int)
+    gf_rates = np.array([t["gf_rate"] for t in teams_data], dtype=float)
+    ga_rates = np.array([t["ga_rate"] for t in teams_data], dtype=float)
+    pts_rates = np.array([t["pts_rate"] for t in teams_data], dtype=float)
 
-    # محاكاة مونت كارلو تعتمد على توزيع بواسون للأهداف المتبقية وفارق الأهداف لكسر التعادل
-    rng = np.random.default_rng(42)
+    group_map = {}
+    group_order_keys = []
+    for idx, td in enumerate(teams_data):
+        g_key = td["group_name"] or "ALL"
+        if g_key not in group_map:
+            group_map[g_key] = []
+            group_order_keys.append(g_key)
+        group_map[g_key].append(idx)
+
+    # مولد عشوائي معزول وآمن للخيوط المتعددة وثابت لنفس حالة جدول الترتيب
+    seed_src = f"{code}_{int(np.sum(cur_pts))}_{int(np.sum(rem_arr))}_{total_teams}"
+    seed_val = int(hashlib.md5(seed_src.encode()).hexdigest()[:8], 16)
+    rng = np.random.default_rng(seed_val)
+
     for _ in range(num_sims):
-        sim_gf = rng.poisson(lam=np.maximum(0.1, gf_rates * rem_arr))
-        sim_ga = rng.poisson(lam=np.maximum(0.1, ga_rates * rem_arr))
-        gd_bonus = (sim_gf - sim_ga) * 0.35
+        has_rem = rem_arr > 0
+        sim_gf = np.where(has_rem, rng.poisson(lam=np.maximum(0.1, gf_rates * rem_arr)), 0)
+        sim_ga = np.where(has_rem, rng.poisson(lam=np.maximum(0.1, ga_rates * rem_arr)), 0)
+        gd_bonus = (sim_gf - sim_ga) * 0.30
 
         exp_rem_pts = (pts_rates * rem_arr) + gd_bonus
-        noise = rng.normal(0.0, np.sqrt(np.maximum(1, rem_arr)) * 1.05)
-        sim_rem_pts = np.clip(np.round(exp_rem_pts + noise), 0, rem_arr * 3)
+        noise = np.where(has_rem, rng.normal(0.0, np.sqrt(np.maximum(1, rem_arr)) * 1.05), 0.0)
+        sim_rem_pts = np.where(has_rem, np.clip(np.round(exp_rem_pts + noise), 0, rem_arr * 3), 0.0)
 
         final_pts = cur_pts + sim_rem_pts
         final_gd = cur_gd + (sim_gf - sim_ga)
-        tie_breaker_score = final_pts + (final_gd * 0.001) + rng.uniform(0, 0.0001, size=total_teams)
+        tie_score = final_pts + (final_gd * 0.001) + rng.uniform(0.0, 0.0001, size=total_teams)
 
-        ranked_indices = np.argsort(-tie_breaker_score)
+        qualified_for_trophy = []
 
-        teams[ranked_indices[0]]["champ_wins"] += 1
-        for idx in ranked_indices[:top_zone_count]:
-            teams[idx]["top4_wins"] += 1
-        if rel_zone_count > 0:
-            for idx in ranked_indices[-rel_zone_count:]:
-                teams[idx]["rel_drops"] += 1
+        for g_key in group_order_keys:
+            g_indices = group_map[g_key]
+            g_arr = np.array(g_indices)
+            g_order = g_arr[np.argsort(-tie_score[g_arr])]
+            g_len = len(g_order)
+            lvl = teams_data[g_indices[0]]["level_code"]
+
+            if code == "UNL":
+                if lvl == "A":
+                    for q_idx in g_order[:min(2, g_len)]:
+                        teams_data[q_idx]["top4_wins"] += 1
+                        qualified_for_trophy.append(q_idx)
+                    if g_len >= 4:
+                        teams_data[g_order[-1]]["rel_drops"] += 1
+                elif lvl in ("B", "C"):
+                    for q_idx in g_order[:min(2, g_len)]:
+                        teams_data[q_idx]["top4_wins"] += 1
+                    if g_len >= 4:
+                        teams_data[g_order[-1]]["rel_drops"] += 1
+                else:
+                    for q_idx in g_order[:min(2, g_len)]:
+                        teams_data[q_idx]["top4_wins"] += 1
+            elif competition_rules:
+                q_cnt = min(g_len, int(competition_rules.get("qualify", 2)))
+                e_cnt = min(g_len, int(competition_rules.get("elim", 0)))
+                for q_idx in g_order[:q_cnt]:
+                    teams_data[q_idx]["top4_wins"] += 1
+                    qualified_for_trophy.append(q_idx)
+                if e_cnt > 0:
+                    for r_idx in g_order[-e_cnt:]:
+                        teams_data[r_idx]["rel_drops"] += 1
+            else:
+                top_spots = min(len(eng_rules.get("ucl", [1, 2, 3, 4])), g_len)
+                rel_spots = min(len(eng_rules.get("rel", [18, 19, 20])) + len(eng_rules.get("rel_playoff", [])), g_len)
+                for q_idx in g_order[:top_spots]:
+                    teams_data[q_idx]["top4_wins"] += 1
+                if rel_spots > 0:
+                    for r_idx in g_order[-rel_spots:]:
+                        teams_data[r_idx]["rel_drops"] += 1
+                teams_data[g_order[0]]["champ_wins"] += 1
+
+        if (code == "UNL" or competition_rules) and qualified_for_trophy:
+            q_arr = np.array(qualified_for_trophy)
+            ko_score = final_pts[q_arr] + rng.normal(0.0, 2.2, size=len(q_arr))
+            champ_idx = q_arr[int(np.argmax(ko_score))]
+            teams_data[champ_idx]["champ_wins"] += 1
 
         for i in range(total_teams):
-            teams[i]["total_sim_pts"] += final_pts[i]
+            teams_data[i]["total_sim_pts"] += final_pts[i]
 
     results = []
-    for t in teams:
-        results.append({
-            "name": t["name"],
-            "crest": t["crest"],
-            "current_pts": t["current_pts"],
-            "played": t["played"],
-            "projected_pts": round(float(t["total_sim_pts"] / num_sims), 1),
-            "champ_pct": round(float((t["champ_wins"] / num_sims) * 100.0), 1),
-            "top4_pct": round(float((t["top4_wins"] / num_sims) * 100.0), 1),
-            "rel_pct": round(float((t["rel_drops"] / num_sims) * 100.0), 1)
-        })
+    for g_key in group_order_keys:
+        g_list = []
+        for idx in group_map[g_key]:
+            t = teams_data[idx]
+            g_list.append({
+                "name": t["short_name"] or t["name"],
+                "full_name": t["name"],
+                "group_name": t["group_name"],
+                "level_code": t["level_code"],
+                "zone": t["zone"],
+                "status_badge": t["status_badge"],
+                "crest": t["crest"],
+                "current_pts": t["current_pts"],
+                "played": t["played"],
+                "projected_pts": round(float(t["total_sim_pts"] / num_sims), 1),
+                "champ_pct": round(float((t["champ_wins"] / num_sims) * 100.0), 1),
+                "top4_pct": round(float((t["top4_wins"] / num_sims) * 100.0), 1),
+                "rel_pct": round(float((t["rel_drops"] / num_sims) * 100.0), 1)
+            })
+        g_list.sort(key=lambda x: (x["projected_pts"], x["current_pts"]), reverse=True)
+        for r_i, item in enumerate(g_list, 1):
+            item["group_rank"] = r_i
+        results.extend(g_list)
 
-    results.sort(key=lambda x: (x["projected_pts"], x["current_pts"]), reverse=True)
     return results
+

@@ -468,14 +468,9 @@ async function preloadGlobalSearchSources() {
   if (tasks.length === 0) return;
   window._globalSearchLoading = true;
   await Promise.all(tasks);
-  window._globalSearchLoading = false;
-
-  const modal = document.getElementById('global-search-modal');
-  const inp = document.getElementById('dp-global-search-input');
-  if (modal && modal.style.display === 'flex' && inp && inp.value.trim().length >= 2) {
-    window.runGlobalQuickSearch(inp.value);
-  }
-}
+  window._globalSearchTimer = null;
+window._globalSearchToken = 0;
+window._lastQuickSearchResults = [];
 
 window.openGlobalSearchModal = function() {
   const modal = document.getElementById('global-search-modal');
@@ -485,7 +480,6 @@ window.openGlobalSearchModal = function() {
   document.body.style.overflow = 'hidden';
   if (inp) { inp.value = ''; inp.focus(); }
   window.runGlobalQuickSearch('');
-  preloadGlobalSearchSources();
 };
 
 window.openDirectSearchClub = function(lg, tid, rawName, arName, crest, rank) {
@@ -503,99 +497,180 @@ window.openDirectSearchClub = function(lg, tid, rawName, arName, crest, rank) {
   }
 };
 
-window.runGlobalQuickSearch = function(rawQuery) {
+async function openMercatoItemFromSearch(itemId) {
+  if (typeof window.closeModal === 'function') window.closeModal('global-search-modal');
+  const st = window._mercatoState;
+  const findAndOpen = () => {
+    if (st.transfersList.some(x => String(x.id) === String(itemId))) {
+      openMercatoDetailModal('transfers', itemId);
+      return true;
+    }
+    if (st.contractsList.some(x => String(x.id) === String(itemId))) {
+      openMercatoDetailModal('contracts', itemId);
+      return true;
+    }
+    return false;
+  };
+  if (findAndOpen()) return;
+  try {
+    const res = await fetch('/api/mercato?refresh=false');
+    const data = await res.json();
+    if (data && data.status === 'success') {
+      st.transfersList = data.transfers || [];
+      st.contractsList = data.contracts || [];
+      st.tickerNews = data.ticker || [];
+      if (findAndOpen()) return;
+    }
+  } catch (e) {}
+  activateSection('transfers');
+}
+
+window.executeQuickSearchItem = function(idx) {
+  const item = (window._lastQuickSearchResults || [])[idx];
+  if (!item) return;
+  if (typeof window.closeModal === 'function') window.closeModal('global-search-modal');
+
+  if (item.kind === 'match') {
+    openTodayMatchModal(item.matchIdx);
+  } else if (item.kind === 'club') {
+    openDirectSearchClub(item.leagueCode, item.teamId, item.rawName, item.name, item.crest, item.rank);
+  } else if (item.kind === 'nation') {
+    openEntityHistoryModal(
+      'nation',
+      encodeURIComponent(item.rawName || item.name),
+      encodeURIComponent(item.name),
+      encodeURIComponent(item.flagUrl || ''),
+      item.confed || 'FIFA',
+      item.rank || '-'
+    );
+  } else if (item.kind === 'mercato') {
+    openMercatoItemFromSearch(item.itemId);
+  } else if (item.kind === 'news') {
+    openNewsArticleByObj(item.newsObj);
+  }
+};
+
+function renderQuickSearchBox(results, isSearchingBackend = false) {
   const box = document.getElementById('dp-global-search-results');
   if (!box) return;
-  const q = (rawQuery || '').trim().toLowerCase();
-
-  if (q.length < 2) {
-    box.innerHTML = '<div style="text-align:center; padding:24px 10px; color:var(--muted); font-size:0.84rem;">اكتب حرفين على الأقل للبحث السريع في المباريات والأندية والأخبار والانتقالات والعقود</div>';
-    return;
-  }
-
-  const results = [];
-
-  // 1. البحث في مباريات اليوم
-  (window.currentTodayMatches || []).forEach((m, idx) => {
-    const hay = `${m.home_team} ${m.away_team} ${m.home_en || ''} ${m.away_en || ''} ${m.league_name}`.toLowerCase();
-    if (hay.includes(q)) {
-      results.push({
-        type: 'مباراة',
-        title: `${m.home_team} ضد ${m.away_team}`,
-        sub: `${m.league_name} • ${m.state === 'pre' ? formatLocalKickoff(m.kickoff_iso, m.kickoff_time, true) : `${m.home_score} - ${m.away_score}`}`,
-        action: `closeModal('global-search-modal'); openTodayMatchModal(${idx});`
-      });
-    }
-  });
-
-  // 2. البحث في أندية الترتيب
-  const curLg = window._cachedStandingsLeague || (typeof activeLeague !== 'undefined' && activeLeague ? activeLeague : 'PL');
-  (window._cachedStandingsData || []).forEach(t => {
-    const hay = `${t.short_name || ''} ${t.team_name || ''}`.toLowerCase();
-    if (hay.includes(q)) {
-      results.push({
-        type: 'نادٍ',
-        title: t.short_name || t.team_name,
-        sub: `المركز #${t.rank} • ${t.points} نقطة`,
-        action: `openDirectSearchClub('${escapeHtml(curLg)}', '${escapeHtml(t.team_id || '')}', '${escapeHtml((t.team_name || t.short_name || '').replace(/'/g, ''))}', '${escapeHtml((t.short_name || t.team_name || '').replace(/'/g, ''))}', '${escapeHtml(t.crest || '')}', '${escapeHtml(t.rank)}')`
-      });
-    }
-  });
-
-  // 3. البحث في الأخبار
-  (typeof currentNewsItems !== 'undefined' ? currentNewsItems : []).forEach((n, idx) => {
-    const hay = `${n.title || ''} ${n.summary || ''}`.toLowerCase();
-    if (hay.includes(q)) {
-      results.push({
-        type: 'خبر',
-        title: n.title,
-        sub: n.published_time || 'غرفة الأخبار',
-        action: `closeModal('global-search-modal'); openNewsArticle(${idx});`
-      });
-    }
-  });
-
-  // 4. البحث في الميركاتو وتجديد العقود
-  ((window._mercatoState && window._mercatoState.transfersList) || []).forEach(item => {
-    const hay = `${item.name} ${item.from_club} ${item.to_club || ''}`.toLowerCase();
-    if (hay.includes(q)) {
-      results.push({
-        type: 'انتقال',
-        title: item.name,
-        sub: `${item.from_club} ⬅️ ${item.to_club || ''} (${item.status_label})`,
-        action: `closeModal('global-search-modal'); openMercatoDetailModal('transfers', '${escapeHtml(item.id)}');`
-      });
-    }
-  });
-
-  ((window._mercatoState && window._mercatoState.contractsList) || []).forEach(item => {
-    const hay = `${item.name} ${item.from_club || ''}`.toLowerCase();
-    if (hay.includes(q)) {
-      results.push({
-        type: 'عقد',
-        title: item.name,
-        sub: `${item.from_club} • ${item.status_label}`,
-        action: `closeModal('global-search-modal'); openMercatoDetailModal('contracts', '${escapeHtml(item.id)}');`
-      });
-    }
-  });
+  window._lastQuickSearchResults = results;
 
   if (results.length === 0) {
-    box.innerHTML = window._globalSearchLoading
-      ? '<div style="text-align:center; padding:24px 10px; color:var(--accent-green); font-size:0.84rem; font-weight:700;">جاري فحص بيانات الأندية والأخبار والميركاتو...</div>'
+    box.innerHTML = isSearchingBackend
+      ? '<div style="text-align:center; padding:24px 10px; color:var(--accent-green); font-size:0.84rem; font-weight:700;">جاري البحث في جميع البطولات والمنتخبات والأخبار...</div>'
       : '<div style="text-align:center; padding:24px 10px; color:var(--muted); font-size:0.84rem;">لم يتم العثور على نتائج مطابقة حالياً.</div>';
     return;
   }
 
-  box.innerHTML = results.slice(0, 16).map(r => `
-    <div class="dp-search-item" onclick="${r.action}">
+  box.innerHTML = results.slice(0, 18).map((r, idx) => `
+    <div class="dp-search-item" onclick="executeQuickSearchItem(${idx})">
       <div style="min-width:0;">
         <div style="font-weight:800; font-size:0.86rem; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(r.title)}</div>
         <div style="font-size:0.74rem; color:var(--muted); margin-top:2px;">${escapeHtml(r.sub)}</div>
       </div>
-      <span class="hub-badge">${escapeHtml(r.type)}</span>
+      <span class="hub-badge">${escapeHtml(r.badge)}</span>
     </div>
   `).join('');
+}
+
+window.runGlobalQuickSearch = function(rawQuery) {
+  const box = document.getElementById('dp-global-search-results');
+  if (!box) return;
+  const q = (rawQuery || '').trim();
+  const qLow = q.toLowerCase();
+
+  if (window._globalSearchTimer) clearTimeout(window._globalSearchTimer);
+
+  if (qLow.length < 2) {
+    window._lastQuickSearchResults = [];
+    box.innerHTML = '<div style="text-align:center; padding:24px 10px; color:var(--muted); font-size:0.84rem;">اكتب حرفين على الأقل للبحث السريع في المباريات والأندية والمنتخبات والأخبار والانتقالات</div>';
+    return;
+  }
+
+  // 1. نتائج فورية من مباريات اليوم المحمّلة
+  const localMatches = [];
+  (window.currentTodayMatches || []).forEach((m, idx) => {
+    const hay = `${m.home_team} ${m.away_team} ${m.home_en || ''} ${m.away_en || ''} ${m.league_name}`.toLowerCase();
+    if (hay.includes(qLow)) {
+      localMatches.push({
+        kind: 'match',
+        badge: 'مباراة',
+        title: `${m.home_team} ضد ${m.away_team}`,
+        sub: `${m.league_name} • ${m.state === 'pre' ? formatLocalKickoff(m.kickoff_iso, m.kickoff_time, true) : `${m.home_score} - ${m.away_score}`}`,
+        matchIdx: idx
+      });
+    }
+  });
+
+  renderQuickSearchBox(localMatches, true);
+
+  // 2. استعلام السيرفر /api/search بعد 250ms للبحث الشامل في كل البطولات والمنتخبات والميركاتو والأخبار
+  const token = ++window._globalSearchToken;
+  window._globalSearchTimer = setTimeout(async () => {
+    try {
+      const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+      if (token !== window._globalSearchToken) return;
+      const json = await res.json();
+      const srv = (json && json.results) ? json.results : {};
+      const merged = [...localMatches];
+
+      (srv.clubs || []).forEach(c => {
+        merged.push({
+          kind: 'club',
+          badge: 'نادٍ',
+          title: c.name || c.raw_name,
+          sub: `${c.league_code || ''} • المركز #${c.rank} • ${c.points} نقطة`,
+          leagueCode: c.league_code,
+          teamId: c.team_id,
+          rawName: c.raw_name,
+          name: c.name,
+          crest: c.crest,
+          rank: c.rank
+        });
+      });
+
+      (srv.nations || []).forEach(n => {
+        merged.push({
+          kind: 'nation',
+          badge: 'منتخب',
+          title: n.name || n.raw_name,
+          sub: `${n.confederation || 'FIFA'} • تصنيف الفيفا #${n.rank}`,
+          rawName: n.raw_name,
+          name: n.name,
+          flagUrl: n.flag_url,
+          confed: n.confederation,
+          rank: n.rank
+        });
+      });
+
+      (srv.transfers || []).forEach(t => {
+        merged.push({
+          kind: 'mercato',
+          badge: 'ميركاتو',
+          title: t.name,
+          sub: `${t.from_club}${t.to_club ? ` ⬅️ ${t.to_club}` : ''} (${t.status_label || ''})`,
+          itemId: t.id
+        });
+      });
+
+      (srv.news || []).forEach(n => {
+        merged.push({
+          kind: 'news',
+          badge: 'خبر',
+          title: n.title,
+          sub: n.published_time || 'غرفة الأخبار',
+          newsObj: n
+        });
+      });
+
+      renderQuickSearchBox(merged, false);
+    } catch (e) {
+      if (token === window._globalSearchToken) {
+        renderQuickSearchBox(localMatches, false);
+      }
+    }
+  }, 250);
+};
 };
 
 // تفعيل التوجيه بالرابط وزر الرجوع التلقائي بشكل متزامن مع النوافذ
@@ -625,63 +700,66 @@ function renderFixturesList(fixtures) {
     return;
   }
 
-  container.innerHTML = fixtures.map((f, idx) => `
-    <div class="fixture-card" data-match-id="${f.fixture_id}" onclick="openModal(${idx})">
-      <div class="fixture-header">
-     <span>الجولة ${f.gameweek} • 🕒 ${formatLocalKickoff(f.kickoff_iso, f.kickoff_time, false)}</span>
-        <span class="radar-pill" style="background: ${f.edge.color}20; color: ${f.edge.color}; border: 1px solid ${f.edge.color};">
-          ${f.edge.label}
-        </span>
-      </div>
+  container.innerHTML = fixtures.map((f, idx) => {
+    const safeColor = escapeHtml((f.edge && f.edge.color) || '#10b981');
+    return `
+      <div class="fixture-card" data-match-id="${escapeHtml(f.fixture_id)}" onclick="openModal(${idx})">
+        <div class="fixture-header">
+          <span>الجولة ${escapeHtml(f.gameweek)} • 🕒 ${escapeHtml(formatLocalKickoff(f.kickoff_iso, f.kickoff_time, false))}</span>
+          <span class="radar-pill" style="background: ${safeColor}20; color: ${safeColor}; border: 1px solid ${safeColor};">
+            ${escapeHtml(f.edge && f.edge.label)}
+          </span>
+        </div>
 
-      <div class="teams-matchup">
-        <div class="team-col">
-          <div class="crest-wrapper"><img src="${f.home.crest}" alt="${f.home.short}" onerror="this.src='https://via.placeholder.com/60?text=FC'"></div>
-          <div class="team-title">${f.home.short}</div>
-          <div class="team-elo">Elo ${f.home.elo}</div>
-          <div class="form-badges">
-            ${(f.home.form || []).map(res => `<span class="badge-f form-${res.toLowerCase()}">${res}</span>`).join('')}
+        <div class="teams-matchup">
+          <div class="team-col">
+            <div class="crest-wrapper"><img src="${escapeHtml(f.home.crest)}" alt="${escapeHtml(f.home.short)}" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;"></div>
+            <div class="team-title">${escapeHtml(f.home.short)}</div>
+            <div class="team-elo">Elo ${escapeHtml(f.home.elo)}</div>
+            <div class="form-badges">
+              ${(f.home.form || []).map(res => `<span class="badge-f form-${escapeHtml(res).toLowerCase()}">${escapeHtml(res)}</span>`).join('')}
+            </div>
+          </div>
+
+          <div class="vs-center" style="text-align:center;">
+            <div class="score-badge">${escapeHtml(f.predicted_score)}</div>
+            <div style="font-size:0.72rem; color:var(--muted); margin-top:4px; font-weight:700;">ثقة (${escapeHtml(f.score_confidence)}%)</div>
+          </div>
+
+          <div class="team-col">
+            <div class="crest-wrapper"><img src="${escapeHtml(f.away.crest)}" alt="${escapeHtml(f.away.short)}" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;"></div>
+            <div class="team-title">${escapeHtml(f.away.short)}</div>
+            <div class="team-elo">Elo ${escapeHtml(f.away.elo)}</div>
+            <div class="form-badges">
+              ${(f.away.form || []).map(res => `<span class="badge-f form-${escapeHtml(res).toLowerCase()}">${escapeHtml(res)}</span>`).join('')}
+            </div>
           </div>
         </div>
 
-        <div class="vs-center" style="text-align:center;">
-          <div class="score-badge">${f.predicted_score}</div>
-          <div style="font-size:0.72rem; color:var(--muted); margin-top:4px; font-weight:700;">ثقة (${f.score_confidence}%)</div>
+        <div class="prob-bar">
+          <div class="prob-home" style="width: ${Number(f.home.prob) || 0}%"></div>
+          <div class="prob-draw" style="width: ${Number(f.draw_prob) || 0}%"></div>
+          <div class="prob-away" style="width: ${Number(f.away.prob) || 0}%"></div>
         </div>
 
-        <div class="team-col">
-          <div class="crest-wrapper"><img src="${f.away.crest}" alt="${f.away.short}" onerror="this.src='https://via.placeholder.com/60?text=FC'"></div>
-          <div class="team-title">${f.away.short}</div>
-          <div class="team-elo">Elo ${f.away.elo}</div>
-          <div class="form-badges">
-            ${(f.away.form || []).map(res => `<span class="badge-f form-${res.toLowerCase()}">${res}</span>`).join('')}
-          </div>
+        <div class="prob-labels">
+          <span>${escapeHtml(f.home.short)}: <strong>${escapeHtml(f.home.prob)}%</strong></span>
+          <span>تعادل: <strong>${escapeHtml(f.draw_prob)}%</strong></span>
+          <span>${escapeHtml(f.away.short)}: <strong>${escapeHtml(f.away.prob)}%</strong></span>
+        </div>
+
+        <div class="market-tags">
+          <div class="tag-item">Over 2.5: <strong>${escapeHtml(f.markets.over_25)}%</strong></div>
+          <div class="tag-item">BTTS: <strong>${escapeHtml(f.markets.btts_yes)}%</strong></div>
+          <div class="tag-item">xG: <strong>${escapeHtml(f.home.xg)} - ${escapeHtml(f.away.xg)}</strong></div>
+        </div>
+
+        <div style="text-align:center; font-size:0.75rem; color:var(--accent-cyan); margin-top:10px;">
+          🧪 انقر لعرض تقرير الرادار ومؤشر التكافؤ ومختبر السيناريوهات
         </div>
       </div>
-
-      <div class="prob-bar">
-        <div class="prob-home" style="width: ${f.home.prob}%"></div>
-        <div class="prob-draw" style="width: ${f.draw_prob}%"></div>
-        <div class="prob-away" style="width: ${f.away.prob}%"></div>
-      </div>
-
-      <div class="prob-labels">
-        <span>${f.home.short}: <strong>${f.home.prob}%</strong></span>
-        <span>تعادل: <strong>${f.draw_prob}%</strong></span>
-        <span>${f.away.short}: <strong>${f.away.prob}%</strong></span>
-      </div>
-
-      <div class="market-tags">
-        <div class="tag-item">Over 2.5: <strong>${f.markets.over_25}%</strong></div>
-        <div class="tag-item">BTTS: <strong>${f.markets.btts_yes}%</strong></div>
-        <div class="tag-item">xG: <strong>${f.home.xg} - ${f.away.xg}</strong></div>
-      </div>
-
-      <div style="text-align:center; font-size:0.75rem; color:var(--accent-cyan); margin-top:10px;">
-        🧪 انقر لعرض تقرير الرادار وسجل المواجهات المباشرة ومختبر السيناريوهات
-      </div>
-    </div>
-  `).join('');
+    `;
+  }).join('');
   if (typeof window.refreshFavoriteStarsAndSorting === 'function') window.refreshFavoriteStarsAndSorting();
 }
 
@@ -689,8 +767,17 @@ async function loadGameweek(leagueCode, forceRefresh = false) {
   const container = document.getElementById('fixtures-container');
   if (!container) return;
   const reqToken = ++window._viewReqToken;
+  const cacheKey = `gw_${leagueCode}`;
 
-  if (!forceRefresh && typeof BROWSER_CACHE !== 'undefined' && BROWSER_CACHE.fixtures && BROWSER_CACHE.fixtures[leagueCode] && BROWSER_CACHE.fixtures[leagueCode].length > 0) {
+  if (
+    !forceRefresh &&
+    typeof BROWSER_CACHE !== 'undefined' &&
+    BROWSER_CACHE.fixtures &&
+    BROWSER_CACHE.fixtures[leagueCode] &&
+    BROWSER_CACHE.fixtures[leagueCode].length > 0 &&
+    typeof isBrowserCacheFresh === 'function' &&
+    isBrowserCacheFresh(cacheKey)
+  ) {
     window.currentFixtures = BROWSER_CACHE.fixtures[leagueCode];
     renderFixturesList(window.currentFixtures);
     return;
@@ -705,6 +792,7 @@ async function loadGameweek(leagueCode, forceRefresh = false) {
     window.currentFixtures = data.fixtures || [];
     if (typeof BROWSER_CACHE !== 'undefined' && window.currentFixtures.length > 0) {
       BROWSER_CACHE.fixtures[leagueCode] = window.currentFixtures;
+      if (typeof touchBrowserCache === 'function') touchBrowserCache(cacheKey);
     }
     renderFixturesList(window.currentFixtures);
   } catch (e) {
@@ -817,99 +905,6 @@ window.toggleLeagueAccordion = function(groupKey) {
   if (card) card.classList.toggle('is-collapsed', Boolean(window._collapsedLeagueGroups[groupKey]));
 };
 
-function pickFeaturedMatchItem(indexedMatches) {
-  if (!indexedMatches || indexedMatches.length === 0) return null;
-  const bigKeywords = [
-    'real madrid', 'barcelona', 'liverpool', 'man city', 'manchester city', 'arsenal',
-    'chelsea', 'man united', 'manchester united', 'bayern', 'dortmund', 'inter',
-    'milan', 'juventus', 'psg', 'al hilal', 'al nassr', 'al ahly', 'zamalek',
-    'spain', 'france', 'england', 'germany', 'portugal', 'italy'
-  ];
-
-  const scoreItem = (x) => {
-    const m = x.m;
-    const text = `${m.home_team} ${m.away_team} ${m.home_en || ''} ${m.away_en || ''}`.toLowerCase();
-    const isFav = typeof window.isClubFavoritePublic === 'function' &&
-      (window.isClubFavoritePublic(m.home_team) || window.isClubFavoritePublic(m.away_team));
-    const bigHits = bigKeywords.filter(k => text.includes(k)).length;
-    let pts = 0;
-    if (m.is_live) pts += 60;
-    else if (m.state === 'pre') pts += 30;
-    if (isFav) pts += 50;
-    if (m.league_code === 'UCL') pts += 25;
-    pts += bigHits * 18;
-    return pts;
-  };
-
-  let best = indexedMatches[0];
-  let bestScore = scoreItem(best);
-  for (let i = 1; i < indexedMatches.length; i++) {
-    const sc = scoreItem(indexedMatches[i]);
-    if (sc > bestScore) {
-      bestScore = sc;
-      best = indexedMatches[i];
-    }
-  }
-  return best;
-}
-
-function renderFeaturedHeroHtml(featured) {
-  const heroBox = document.getElementById('today-featured-hero');
-  if (!heroBox) return;
-  if (!featured) {
-    heroBox.innerHTML = '';
-    return;
-  }
-
-  const m = featured.m;
-  const localTime = formatLocalKickoff(m.kickoff_iso, m.kickoff_time, true);
-  const scoreHtml = m.state === 'pre'
-    ? `<div class="dp-hero-score is-pre">${escapeHtml(localTime)}</div>
-       <div class="dp-hero-sub">موعد الانطلاق</div>`
-    : `<div class="dp-hero-score ${m.is_live ? 'is-live' : ''}">${escapeHtml(m.home_score)} - ${escapeHtml(m.away_score)}</div>
-       <div class="dp-hero-sub ${m.is_live ? 'is-live' : ''}">${escapeHtml(m.status_text)}</div>`;
-
-  const kickerLabel = m.is_live ? 'المباراة المباشرة الأبرز' : 'قمة اليوم المختارة';
-
-  heroBox.innerHTML = `
-    <div class="dp-hero-match ${m.is_live ? 'is-live' : ''}" onclick="openTodayMatchModal(${featured.idx})">
-      <div class="dp-hero-top">
-        <span class="dp-hero-kicker">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-          <span>${kickerLabel}</span>
-        </span>
-        <span class="dp-hero-league">
-          ${m.is_live
-            ? `<span class="live-badge"><span class="live-dot-pulse"></span> مباشر</span>`
-            : `<span class="dp-inline-league-tag">${typeof renderLeagueLogoHtml === 'function' ? renderLeagueLogoHtml(m.league_code, m.league_flag, 'size-xs', m.league_logo) : (m.league_flag || '')}<span>${escapeHtml(m.league_name)}</span></span>`
-          }
-        </span>
-      </div>
-
-      <div class="dp-hero-body">
-        <div class="dp-hero-team">
-          <img src="${escapeHtml(m.home_crest)}" alt="" onerror="this.src='https://via.placeholder.com/48?text=FC'">
-          <div class="dp-hero-team-name">${escapeHtml(m.home_team)}</div>
-        </div>
-
-        <div class="dp-hero-center">
-          ${scoreHtml}
-        </div>
-
-        <div class="dp-hero-team">
-          <img src="${escapeHtml(m.away_crest)}" alt="" onerror="this.src='https://via.placeholder.com/48?text=FC'">
-          <div class="dp-hero-team-name">${escapeHtml(m.away_team)}</div>
-        </div>
-      </div>
-
-      <div class="dp-hero-footer">
-        <span class="dp-hero-meta-txt">${escapeHtml(m.channel_verified ? m.channel : (m.venue || m.league_name))}</span>
-        <span class="dp-hero-cta">مركز المباراة ↗</span>
-      </div>
-    </div>
-  `;
-}
-
 function renderMatchRowHtml(m, origIdx) {
   const isHomeFav = typeof window.isClubFavoritePublic === 'function' && window.isClubFavoritePublic(m.home_team);
   const isAwayFav = typeof window.isClubFavoritePublic === 'function' && window.isClubFavoritePublic(m.away_team);
@@ -925,7 +920,7 @@ function renderMatchRowHtml(m, origIdx) {
       <div class="dp-row-side home">
         <button type="button" class="dp-fav-star-btn dp-row-fav ${isHomeFav ? 'is-fav' : ''}" data-club="${escapeHtml(m.home_team)}" onclick="window.toggleFavoriteClub(this.dataset.club, event)" title="إضافة ${escapeHtml(m.home_team)} للمفضلة">${isHomeFav ? '★' : '☆'}</button>
         <span class="dp-row-team-name">${escapeHtml(m.home_team)}</span>
-        <img src="${escapeHtml(m.home_crest)}" alt="" loading="lazy" onerror="this.src='https://via.placeholder.com/24?text=FC'">
+        <img src="${escapeHtml(m.home_crest)}" alt="" loading="lazy" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
       </div>
 
       <div class="dp-row-center">
@@ -934,7 +929,7 @@ function renderMatchRowHtml(m, origIdx) {
       </div>
 
       <div class="dp-row-side away">
-        <img src="${escapeHtml(m.away_crest)}" alt="" loading="lazy" onerror="this.src='https://via.placeholder.com/24?text=FC'">
+        <img src="${escapeHtml(m.away_crest)}" alt="" loading="lazy" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
         <span class="dp-row-team-name">${escapeHtml(m.away_team)}</span>
         <button type="button" class="dp-fav-star-btn dp-row-fav ${isAwayFav ? 'is-fav' : ''}" data-club="${escapeHtml(m.away_team)}" onclick="window.toggleFavoriteClub(this.dataset.club, event)" title="إضافة ${escapeHtml(m.away_team)} للمفضلة">${isAwayFav ? '★' : '☆'}</button>
       </div>
@@ -956,7 +951,6 @@ function renderTodayMatchesGrouped(matches) {
   if (!container) return;
 
   if (!matches || matches.length === 0) {
-    renderFeaturedHeroHtml(null);
     if (filtersBox) filtersBox.innerHTML = '';
     container.innerHTML = `
       <div class="dp-empty-state">
@@ -974,8 +968,6 @@ function renderTodayMatchesGrouped(matches) {
   }
 
   const indexed = matches.map((m, idx) => ({ m, idx }));
-
-
   const liveCount = indexed.filter(x => x.m.is_live).length;
   const preCount = indexed.filter(x => x.m.state === 'pre').length;
   const postCount = indexed.filter(x => x.m.state === 'post').length;
@@ -984,7 +976,6 @@ function renderTodayMatchesGrouped(matches) {
     (window.isClubFavoritePublic(x.m.home_team) || window.isClubFavoritePublic(x.m.away_team))
   );
 
-  // إحصاء عدد المباريات في كل بطولة لعرضها في قائمة منسدلة نظيفة
   const leagueMap = new Map();
   indexed.forEach(x => {
     const code = x.m.league_code || 'OTHER';
@@ -1006,7 +997,6 @@ function renderTodayMatchesGrouped(matches) {
   ];
   if (favItems.length > 0) statusPills.splice(1, 0, { key: 'FAV', label: `★ المفضلة (${favItems.length})` });
 
-  // شريط فلاتر واحد مدمج ونظيف
   if (filtersBox) {
     filtersBox.innerHTML = `
       <div class="dp-mc-filter-bar">
@@ -1022,7 +1012,7 @@ function renderTodayMatchesGrouped(matches) {
           <select class="dp-league-select" aria-label="تصفية حسب البطولة" onchange="setTodayLeagueFilter(this.value)">
             <option value="ALL" ${curLg === 'ALL' ? 'selected' : ''}>كل البطولات (${uniqueLeagues.length})</option>
             ${uniqueLeagues.map(lg => `
-              <option value="${escapeHtml(lg.code)}" ${curLg === lg.code ? 'selected' : ''}>${lg.flag} ${escapeHtml(lg.name)} (${lg.count})</option>
+              <option value="${escapeHtml(lg.code)}" ${curLg === lg.code ? 'selected' : ''}>${escapeHtml(lg.flag)} ${escapeHtml(lg.name)} (${lg.count})</option>
             `).join('')}
           </select>
         ` : ''}
@@ -1075,7 +1065,7 @@ function renderTodayMatchesGrouped(matches) {
     `;
   }
 
- const byLeague = new Map();
+  const byLeague = new Map();
   filtered.forEach(item => {
     if (curStatus === 'ALL' && curLg === 'ALL' && shownFavIds.has(item.m.id)) return;
     const key = item.m.league_name || 'بطولات أخرى';
@@ -1098,7 +1088,7 @@ function renderTodayMatchesGrouped(matches) {
       <div class="dp-league-card ${isCollapsed ? 'is-collapsed' : ''}" data-group-key="${escapeHtml(gKey)}">
         <div class="dp-league-card-hdr" onclick="toggleLeagueAccordion(this.closest('.dp-league-card').dataset.groupKey)">
           <div class="dp-league-hdr-right">
-            ${typeof renderLeagueLogoHtml === 'function' ? renderLeagueLogoHtml(grp.code, grp.flag, 'size-sm', grp.logo) : `<span>${grp.flag}</span>`}
+            ${typeof renderLeagueLogoHtml === 'function' ? renderLeagueLogoHtml(grp.code, grp.flag, 'size-sm', grp.logo) : `<span>${escapeHtml(grp.flag)}</span>`}
             <span>${escapeHtml(grp.name)}</span>
           </div>
           <div class="dp-league-hdr-left">
@@ -1118,9 +1108,11 @@ function renderTodayMatchesGrouped(matches) {
   loadHomeQuietHighlightsStrip();
 }
 
-async function loadHomeQuietHighlightsStrip() {
+window._sidebarNewsItems = [];
+
+async function loadHomeQuietHighlightsStrip(forceReload = false) {
   const strip = document.getElementById('today-highlights-strip');
-  if (!strip || strip.dataset.loaded === '1') return;
+  if (!strip || (!forceReload && strip.dataset.loaded === '1')) return;
   strip.dataset.loaded = '1';
 
   try {
@@ -1128,7 +1120,7 @@ async function loadHomeQuietHighlightsStrip() {
     const data = await res.json();
     const newsList = (data && data.news) ? data.news.slice(0, 5) : [];
     if (newsList.length === 0) return;
-    if (!currentNewsItems || currentNewsItems.length === 0) currentNewsItems = data.news || [];
+    window._sidebarNewsItems = newsList;
 
     strip.innerHTML = `
       <div class="dp-side-card">
@@ -1138,9 +1130,9 @@ async function loadHomeQuietHighlightsStrip() {
         </div>
         <div class="dp-side-news-list">
           ${newsList.map((n, idx) => `
-            <div class="dp-side-news-item" onclick="openNewsArticle(${idx})">
+            <div class="dp-side-news-item" onclick="openNewsArticleByObj(window._sidebarNewsItems[${idx}])">
               ${n.image_url
-                ? `<img src="${escapeHtml(n.image_url)}" alt="" class="dp-side-news-thumb" loading="lazy" onerror="this.style.display='none'">`
+                ? `<img src="${escapeHtml(n.image_url)}" alt="" class="dp-side-news-thumb" loading="lazy" onerror="this.onerror=null; this.style.display='none';">`
                 : `<div class="dp-side-news-thumb is-fallback"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="20" height="20"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/></svg></div>`
               }
               <div class="dp-side-news-body">
@@ -1373,7 +1365,7 @@ function renderStandingsTableRows(standings, leagueCode) {
               data-rank="${escapeHtml(t.rank)}"
               onclick="openDirectSearchClub(this.dataset.lg, this.dataset.tid, this.dataset.raw, this.dataset.ar, this.dataset.crest, this.dataset.rank)"
               title="اضغط لعرض ملف النادي وألقابه وآخر 5 نتائج">
-              <img src="${escapeHtml(t.crest)}" width="20" height="20" onerror="this.src='https://via.placeholder.com/20?text=FC'">
+              <img src="${escapeHtml(t.crest)}" width="20" height="20" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
               <strong class="team-title-sm">${escapeHtml(t.short_name || t.team_name)}</strong>
             </span>
             ${statusBadge}
@@ -1455,24 +1447,24 @@ async function loadOfficialStandingsAndScorers(leagueCode, forceRefresh = false)
         scorersList.innerHTML = scorers.map(s => {
           let rankBadgeClass = s.rank === 1 ? 'rank-1' : s.rank === 2 ? 'rank-2' : s.rank === 3 ? 'rank-3' : '';
           let avatarHtml = s.headshot
-            ? `<img src="${s.headshot}" width="34" height="34" style="border-radius:50%; object-fit:cover; background:#1a233a; border:1px solid var(--card-border);" onerror="this.style.display='none'">`
+            ? `<img src="${escapeHtml(s.headshot)}" width="34" height="34" style="border-radius:50%; object-fit:cover; background:var(--surface-inset); border:1px solid var(--card-border);" onerror="this.onerror=null; this.style.display='none';">`
             : '';
 
           return `
             <div class="scorer-row">
               <div style="display:flex; align-items:center; gap:10px;">
-                <div class="scorer-rank ${rankBadgeClass}">${s.rank}</div>
+                <div class="scorer-rank ${rankBadgeClass}">${escapeHtml(s.rank)}</div>
                 ${avatarHtml}
                 <div>
-                  <div style="font-weight:800; font-size:0.9rem;">${s.name}</div>
+                  <div style="font-weight:800; font-size:0.9rem;">${escapeHtml(s.name)}</div>
                   <div style="font-size:0.75rem; color:var(--muted); display:flex; align-items:center; gap:5px;">
-                    <img src="${s.crest}" width="14" height="14" onerror="this.style.display='none'">
-                    <span>${s.team}</span>
+                    <img src="${escapeHtml(s.crest)}" width="14" height="14" onerror="this.onerror=null; this.style.display='none';">
+                    <span>${escapeHtml(s.team)}</span>
                   </div>
                 </div>
               </div>
               <div style="font-size:1.2rem; font-weight:900; color:var(--accent-gold);">
-                ${s.goals} <span style="font-size:0.75rem; color:var(--muted); font-weight:400;">أهداف</span>
+                ${escapeHtml(s.goals)} <span style="font-size:0.75rem; color:var(--muted); font-weight:400;">أهداف</span>
               </div>
             </div>
           `;
@@ -1555,8 +1547,8 @@ let filterWrap = document.getElementById('proj-group-filter-bar');
         <td class="${rankClass}" style="font-weight:900; color:var(--accent-gold);">#${rankNum}</td>
         <td>
           <div style="display:flex; align-items:center; gap:6px;">
-            <img src="${row.crest}" width="20" height="20" onerror="this.src='https://via.placeholder.com/20'">
-            <strong>${row.name}</strong>
+            <img src="${escapeHtml(row.crest)}" width="20" height="20" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
+            <strong>${escapeHtml(row.name)}</strong>
           </div>
         </td>
      <td>${row.played}</td>
@@ -2024,24 +2016,23 @@ function renderCardsGridItems() {
       <div class="sleek-club-card" onclick="selectClubForSquadByIdx(${idx})">
         <div style="display:flex; align-items:center; gap:14px;">
           <div class="entity-crest-box" style="width:64px; height:64px;">
-            <img src="${c.crest}" alt="${c.name}" onerror="this.src='https://ui-avatars.com/api/?name=FC&background=1e293b&color=fff&rounded=true'">
+            <img src="${escapeHtml(c.crest)}" alt="${escapeHtml(c.name)}" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
           </div>
           <div style="flex:1; min-width:0;">
-            <div style="font-size:1.15rem; font-weight:900; color:#fff;">${c.name}</div>
+            <div style="font-size:1.15rem; font-weight:900; color:var(--text);">${escapeHtml(c.name)}</div>
             <div style="font-size:0.76rem; color:var(--muted); font-weight:700; margin-top:3px;">
-              ${c.league_flag} ${c.league_name} • المركز #${c.rank}
+              ${escapeHtml(c.league_flag)} ${escapeHtml(c.league_name)} • المركز #${escapeHtml(c.rank)}
             </div>
           </div>
         </div>
-        <div style="background:rgba(0, 230, 118, 0.12); border:1px solid rgba(0, 230, 118, 0.35); border-radius:12px; padding:8px 12px; text-align:center; font-size:0.8rem; font-weight:900; color:var(--accent-green);">
-          🎮 استعراض بطاقات جميع لاعبي ${c.name} ⬅️
+        <div style="background:var(--accent-green-soft); border:1px solid rgba(16, 185, 129, 0.35); border-radius:12px; padding:8px 12px; text-align:center; font-size:0.8rem; font-weight:900; color:var(--accent-green);">
+          🎮 استعراض بطاقات جميع لاعبي ${escapeHtml(c.name)} ⬅️
         </div>
       </div>
     `).join('');
     return;
   }
 
-  // عرض بطاقات FIFA لجميع لاعبي النادي المختار
   const players = (st.squadPlayersData || []).filter(p => {
     if (!q) return true;
     return `${p.name} ${p.position} ${p.pos_abbr} ${p.nationality} ${p.jersey}`.toLowerCase().includes(q);
@@ -2051,7 +2042,8 @@ function renderCardsGridItems() {
     grid.innerHTML = '<div class="loading-state" style="grid-column:1/-1;">لا يوجد لاعبون مطابقون لبحثك في هذا النادي.</div>';
     return;
   }
-st._filteredPlayers = players;
+
+  st._filteredPlayers = players;
   grid.innerHTML = players.map((p, idx) => {
     const f = p.fifa || { pac: 80, sho: 75, pas: 78, dri: 80, def: 65, phy: 76 };
     const ovr = p.overall || 82;
@@ -2061,63 +2053,42 @@ st._filteredPlayers = players;
       <div class="fifa-fut-card ${isSpecial ? 'tier-special' : ''}" onclick="openFifaPlayerModal(${idx})">
         <div class="fut-header-split">
           <div class="fut-rating-column">
-            <div class="fut-ovr-big">${ovr}</div>
-            <div class="fut-pos-tag">${p.pos_abbr || 'CM'}</div>
-            <div style="font-size:0.7rem; color:var(--accent-cyan); font-weight:900; margin-top:3px;">#${p.jersey || '-'}</div>
+            <div class="fut-ovr-big">${escapeHtml(ovr)}</div>
+            <div class="fut-pos-tag">${escapeHtml(p.pos_abbr || 'CM')}</div>
+            <div style="font-size:0.7rem; color:var(--accent-cyan); font-weight:900; margin-top:3px;">#${escapeHtml(p.jersey || '-')}</div>
           </div>
 
           <div class="fut-player-portrait">
-            <img src="${p.avatar}" alt="${p.name}" onerror="this.src='https://ui-avatars.com/api/?name=${encodeURIComponent(p.name.slice(0,2))}&background=0f172a&color=ffd600&bold=true&rounded=true'">
+            <img src="${escapeHtml(p.avatar)}" alt="${escapeHtml(p.name)}" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
           </div>
 
           <div style="display:flex; flex-direction:column; align-items:center; gap:6px;">
-            ${p.club_crest ? `<img src="${p.club_crest}" width="34" height="34" style="object-fit:contain;" onerror="this.style.display='none'">` : ''}
-            <span style="font-size:0.68rem; background:rgba(255,255,255,0.07); padding:2px 8px; border-radius:8px; color:#e2e8f0; font-weight:800;">${p.nationality}</span>
+            ${p.club_crest ? `<img src="${escapeHtml(p.club_crest)}" width="34" height="34" style="object-fit:contain;" onerror="this.onerror=null; this.style.display='none';">` : ''}
+            <span style="font-size:0.68rem; background:rgba(255,255,255,0.08); padding:2px 8px; border-radius:8px; color:#e2e8f0; font-weight:800;">${escapeHtml(p.nationality)}</span>
           </div>
         </div>
 
-        <div class="fut-name-banner">${p.name}</div>
+        <div class="fut-name-banner">${escapeHtml(p.name)}</div>
 
-        <!-- طاقات بطاقة فيفا الـ 6 -->
         <div class="fut-attributes-grid">
-          <div class="fut-attr-item">
-            <span class="fut-attr-lbl">⚡ السرعة PAC</span>
-            <span class="fut-attr-val">${f.pac}</span>
-          </div>
-          <div class="fut-attr-item">
-            <span class="fut-attr-lbl">🪄 المراوغة DRI</span>
-            <span class="fut-attr-val">${f.dri}</span>
-          </div>
-          <div class="fut-attr-item">
-            <span class="fut-attr-lbl">🎯 الهجوم SHO</span>
-            <span class="fut-attr-val">${f.sho}</span>
-          </div>
-          <div class="fut-attr-item">
-            <span class="fut-attr-lbl">🛡️ الدفاع DEF</span>
-            <span class="fut-attr-val">${f.def}</span>
-          </div>
-          <div class="fut-attr-item">
-            <span class="fut-attr-lbl">📐 التمرير PAS</span>
-            <span class="fut-attr-val">${f.pas}</span>
-          </div>
-          <div class="fut-attr-item">
-            <span class="fut-attr-lbl">💪 البدني PHY</span>
-            <span class="fut-attr-val">${f.phy}</span>
-          </div>
+          <div class="fut-attr-item"><span class="fut-attr-lbl">⚡ السرعة PAC</span><span class="fut-attr-val">${escapeHtml(f.pac)}</span></div>
+          <div class="fut-attr-item"><span class="fut-attr-lbl">🪄 المراوغة DRI</span><span class="fut-attr-val">${escapeHtml(f.dri)}</span></div>
+          <div class="fut-attr-item"><span class="fut-attr-lbl">🎯 الهجوم SHO</span><span class="fut-attr-val">${escapeHtml(f.sho)}</span></div>
+          <div class="fut-attr-item"><span class="fut-attr-lbl">🛡️ الدفاع DEF</span><span class="fut-attr-val">${escapeHtml(f.def)}</span></div>
+          <div class="fut-attr-item"><span class="fut-attr-lbl">📐 التمرير PAS</span><span class="fut-attr-val">${escapeHtml(f.pas)}</span></div>
+          <div class="fut-attr-item"><span class="fut-attr-lbl">💪 البدني PHY</span><span class="fut-attr-val">${escapeHtml(f.phy)}</span></div>
         </div>
 
-        <!-- الشريط الجسدي والشخصي (الطول، الوزن، العمر) -->
         <div class="fut-bio-strip">
-          <span>📏 ${p.height || '180 سم'}</span>
-          <span>⚖️ ${p.weight || '74 كغ'}</span>
-          <span>🎂 ${p.age} سنة</span>
-          <span style="color:var(--accent-green);">${p.position}</span>
+          <span>📏 ${escapeHtml(p.height || '180 سم')}</span>
+          <span>⚖️ ${escapeHtml(p.weight || '74 كغ')}</span>
+          <span>🎂 ${escapeHtml(p.age)} سنة</span>
+          <span style="color:var(--accent-green);">${escapeHtml(p.position)}</span>
         </div>
       </div>
     `;
   }).join('');
 }
-
 function openNationCardByIdx(idx) {
   const n = (window._cardsHubState._filteredNations || [])[idx];
   if (!n) return;
@@ -2173,9 +2144,9 @@ async function openEntityHistoryModal(entityType, encodedRawName, encodedArName,
           <div style="font-size:0.78rem; font-weight:900; color:${borderCol}; margin-bottom:6px;">${title}</div>
           <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(175px, 1fr)); gap:8px;">
             ${items.map(h => `
-              <div style="background:#070c18; border:1px solid #1e2d4a; border-right:3.5px solid ${borderCol}; border-radius:12px; padding:8px 12px; display:flex; justify-content:space-between; align-items:center;">
-                <span style="font-size:0.78rem; font-weight:800; color:#f1f5f9;">${h.title}</span>
-                <span style="font-size:1.05rem; font-weight:900; color:${borderCol}; background:rgba(255,255,255,0.05); padding:2px 9px; border-radius:8px;">${h.count}</span>
+              <div style="background:var(--surface-inset); border:1px solid var(--card-border); border-right:3.5px solid ${borderCol}; border-radius:12px; padding:8px 12px; display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-size:0.78rem; font-weight:800; color:var(--text);">${escapeHtml(h.title)}</span>
+                <span style="font-size:1.05rem; font-weight:900; color:${borderCol}; background:var(--card); padding:2px 9px; border-radius:8px;">${escapeHtml(h.count)}</span>
               </div>
             `).join('')}
           </div>
@@ -2185,19 +2156,19 @@ async function openEntityHistoryModal(entityType, encodedRawName, encodedArName,
 
     const allHonoursHtml = honoursList.length > 0
       ? (
-          renderHonoursGroup('🌍 الألقاب العالمية والدولية الكبرى:', worldHonours, '#ffd600') +
-          renderHonoursGroup('🏆 الألقاب القارية الرسمية:', contHonours, '#00d2ff') +
-          renderHonoursGroup('🥇 البطولات المحلية (الدوري والكأس والسوبر):', domHonours, '#00e676')
+          renderHonoursGroup('🌍 الألقاب العالمية والدولية الكبرى:', worldHonours, 'var(--accent-gold-bright)') +
+          renderHonoursGroup('🏆 الألقاب القارية الرسمية:', contHonours, 'var(--accent-cyan)') +
+          renderHonoursGroup('🥇 البطولات المحلية (الدوري والكأس والسوبر):', domHonours, 'var(--accent-green)')
         )
-      : `<div style="background:#070c18; border:1px dashed #1e2d4a; border-radius:12px; padding:12px; text-align:center; color:var(--muted); font-size:0.8rem; margin-bottom:12px;">
+      : `<div class="dp-modal-subpanel" style="border-style:dashed; text-align:center; color:var(--muted); margin-bottom:12px;">
           لم يتوج بألقاب كبرى في السجل الدولي أو أن البيانات قيد التحديث.
          </div>`;
 
     const squadJumpBtn = (entityType === 'club' && teamId)
       ? `<button class="ai-btn"
-            data-league="${escapeHtml(extraInfo)}"
+            data-league="${extraInfo}"
             data-team-id="${escapeHtml(teamId)}"
-            data-team-name="${escapeHtml(arName)}"
+            data-team-name="${arName}"
             data-team-crest="${escapeHtml(imgUrl)}"
             onclick="jumpFromClubModalToSquad(this.dataset.league, this.dataset.teamId, this.dataset.teamName, this.dataset.teamCrest)"
             style="width:100%; margin-top:12px; padding:10px; font-size:0.86rem;">
@@ -2209,45 +2180,49 @@ async function openEntityHistoryModal(entityType, encodedRawName, encodedArName,
       <!-- رأس الصندوق -->
       <div style="display:flex; justify-content:space-between; align-items:center; gap:14px; border-bottom:1px solid var(--card-border); padding-bottom:14px; margin-bottom:16px; flex-wrap:wrap; padding-left: 38px;">
         <div style="display:flex; align-items:center; gap:14px;">
-          <img src="${imgUrl || pf.image}" width="68" height="68" style="object-fit:contain; border-radius:16px; background:#060a14; padding:6px; border:1.5px solid var(--accent-gold);" onerror="this.style.display='none'">
+          <img src="${escapeHtml(imgUrl || pf.image)}" width="68" height="68" style="object-fit:contain; border-radius:16px; background:var(--surface-inset); padding:6px; border:1.5px solid var(--accent-gold);" onerror="this.onerror=null; this.style.display='none';">
           <div>
-            <h3 style="font-size:1.3rem; font-weight:900; color:#fff; margin:0;">${arName}</h3>
+            <h3 style="font-size:1.3rem; font-weight:900; color:var(--text); margin:0;">${escapeHtml(arName)}</h3>
             <div style="font-size:0.8rem; color:var(--accent-cyan); font-weight:800; margin-top:4px;">
-              ${entityType === 'nation' ? `🌍 الاتحاد القاري: ${extraInfo} • تصنيف الفيفا العالمي: #${rankNum}` : `📅 التأسيس: ${pf.founded || '-'} • 🏟️ الملعب: ${pf.stadium || '-'}`}
+              ${entityType === 'nation'
+                ? `🌍 الاتحاد القاري: ${escapeHtml(extraInfo)} • تصنيف الفيفا العالمي: #${escapeHtml(rankNum)}`
+                : `📅 التأسيس: ${escapeHtml(pf.founded || '-')} • 🏟️ الملعب: ${escapeHtml(pf.stadium || '-')}`}
             </div>
           </div>
         </div>
-        <div style="background:rgba(255,214,0,0.14); border:1.5px solid var(--accent-gold); color:var(--accent-gold); padding:6px 14px; border-radius:14px; text-align:center;">
+        <div style="background:var(--accent-gold-soft); border:1.5px solid var(--accent-gold); color:var(--accent-gold-bright); padding:6px 14px; border-radius:14px; text-align:center;">
           <div style="font-size:0.65rem; font-weight:800;">إجمالي البطولات</div>
-          <div style="font-size:1.25rem; font-weight:900;">🏆 ${pf.total_trophies || 0}</div>
+          <div style="font-size:1.25rem; font-weight:900;">🏆 ${escapeHtml(pf.total_trophies || 0)}</div>
         </div>
-      </div> 
-      
+      </div>
+
       <!-- خزانة الألقاب التفصيلية -->
-      <h4 style="font-size:0.92rem; color:var(--accent-gold); margin-bottom:10px;">🏛️ خزانة الألقاب والبطولات الرسمية:</h4>
+      <h4 style="font-size:0.92rem; color:var(--accent-gold-bright); margin-bottom:10px;">🏛️ خزانة الألقاب والبطولات الرسمية:</h4>
       ${allHonoursHtml}
 
       <!-- السجلات التاريخية (الهداف التاريخي، الأكثر صناعة، الأكثر مشاركة) -->
       <h4 style="font-size:0.92rem; color:var(--accent-cyan); margin:14px 0 8px 0;">🌟 السجل التاريخي وأساطير ${entityType === 'nation' ? 'المنتخب' : 'النادي'}:</h4>
       <div class="entity-records-list" style="gap:10px; font-size:0.84rem; margin-bottom:14px;">
-        <div class="entity-rec-row" style="border-bottom:1px dashed rgba(255,255,255,0.07); padding-bottom:6px;">
+        <div class="entity-rec-row" style="border-bottom:1px dashed var(--card-border); padding-bottom:6px;">
           <span class="entity-rec-lbl">⚽ الهداف التاريخي:</span>
-          <span class="entity-rec-val" style="color:var(--accent-gold); font-size:0.88rem;">${pf.top_scorer || '-'}</span>
+          <span class="entity-rec-val" style="color:var(--accent-gold-bright); font-size:0.88rem;">${escapeHtml(pf.top_scorer || '-')}</span>
         </div>
-        <div class="entity-rec-row" style="border-bottom:1px dashed rgba(255,255,255,0.07); padding-bottom:6px;">
+        <div class="entity-rec-row" style="border-bottom:1px dashed var(--card-border); padding-bottom:6px;">
           <span class="entity-rec-lbl">🎯 الأكثر صناعة للأهداف:</span>
-          <span class="entity-rec-val" style="color:var(--accent-green); font-size:0.88rem;">${pf.most_assists || '-'}</span>
+          <span class="entity-rec-val" style="color:var(--accent-green); font-size:0.88rem;">${escapeHtml(pf.most_assists || '-')}</span>
         </div>
         <div class="entity-rec-row">
           <span class="entity-rec-lbl">🛡️ الأكثر لعباً ومشاركة:</span>
-          <span class="entity-rec-val" style="color:var(--accent-cyan); font-size:0.88rem;">${pf.most_apps || '-'}</span>
+          <span class="entity-rec-val" style="color:var(--accent-cyan); font-size:0.88rem;">${escapeHtml(pf.most_apps || '-')}</span>
         </div>
-        </div>
+      </div>
+
       ${entityType === 'club' && teamId ? '<div id="dp-club-recent-results-box" style="margin-bottom:14px;"></div>' : ''}
+
       <!-- نبذة موسوعية حية -->
-      <div style="background:#070c18; border:1px solid var(--card-border); border-right:4px solid var(--accent-green); border-radius:12px; padding:12px 14px; font-size:0.82rem; line-height:1.7; color:#cbd5e1;">
+      <div class="dp-modal-panel" style="border-right:4px solid var(--accent-green); font-size:0.82rem; line-height:1.7; color:var(--text-secondary);">
         <div style="font-weight:900; color:var(--accent-green); margin-bottom:4px;">📖 نبذة تاريخية موثقة:</div>
-        <div>${pf.bio || ''}</div>
+        <div>${escapeHtml(pf.bio || '')}</div>
       </div>
 
       ${squadJumpBtn}
@@ -2317,86 +2292,14 @@ function openFifaPlayerModal(playerIdx) {
 
   const f = p.fifa || { pac: 80, sho: 75, pas: 78, dri: 80, def: 65, phy: 76 };
 
-  const statBarRow = (label, val, col) => `
+ const statBarRow = (label, val, col) => `
     <div style="margin-bottom:9px;">
-      <div style="display:flex; justify-content:space-between; font-size:0.82rem; font-weight:800; margin-bottom:4px; ">
-        <span style="color:#e2e8f0;">${label}</span>
-        <span style="color:${col}; font-weight:900;">${val} / 99</span>
+      <div style="display:flex; justify-content:space-between; font-size:0.82rem; font-weight:800; margin-bottom:4px;">
+        <span style="color:var(--text-secondary);">${label}</span>
+        <span style="color:${col}; font-weight:900;">${escapeHtml(val)} / 99</span>
       </div>
-      <div style="height:8px; background:#060a14; border-radius:99px; overflow:hidden; border:1px solid #1e2d4a;">
-        <div style="width:${Math.min(100, val)}%; height:100%; background:${col}; border-radius:99px;"></div>
-      </div>
-    </div>
-  `;
-
-  body.innerHTML = `
-    <div style="display:flex; align-items:center; justify-content:space-between; gap:14px; border-bottom:1px solid var(--card-border); padding-bottom:14px; margin-bottom:16px; flex-wrap:wrap; padding-left: 38px;">
-      <div style="display:flex; align-items:center; gap:14px;">
-        <div style="width:76px; height:76px; border-radius:50%; border:2.5px solid var(--accent-gold); overflow:hidden; background:#070c18; flex-shrink:0;">
-          <img src="${p.avatar}" alt="${p.name}" style="width:100%; height:100%; object-fit:cover;" onerror="this.src='https://ui-avatars.com/api/?name=P&background=0f172a&color=ffd600&rounded=true'">
-        </div>
-        <div>
-          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-            <h3 style="font-size:1.3rem; font-weight:900; color:#fff; margin:0;">${p.name}</h3>
-            <span style="background:rgba(255,214,0,0.16); border:1px solid var(--accent-gold); color:var(--accent-gold); padding:2px 10px; border-radius:8px; font-weight:900; font-size:0.8rem;">#${p.jersey}</span>
-          </div>
-          <div style="font-size:0.82rem; color:var(--accent-cyan); font-weight:800; margin-top:4px; display:flex; align-items:center; gap:6px;">
-            ${p.club_crest ? `<img src="${p.club_crest}" width="18" height="18">` : ''}
-            <span>${p.club}</span> • <span>${p.position}</span>
-          </div>
-        </div>
-      </div>
-
-      <div style="background:linear-gradient(145deg, #ffd600, #ff9100); color:#050811; border-radius:16px; padding:8px 16px; text-align:center; flex-shrink:0;">
-        <div style="font-size:0.65rem; font-weight:900;">FIFA OVR</div>
-        <div style="font-size:1.6rem; font-weight:900; line-height:1;">${p.overall}</div>
-      </div>
-    </div>
-
-    <!-- القياسات الجسدية والبيانات الشخصية الحقيقية -->
-    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(115px, 1fr)); gap:8px; margin-bottom:16px; text-align:center;">
-      <div style="background:#070c18; border:1px solid #1e2d4a; border-radius:12px; padding:9px;">
-        <div style="font-size:0.7rem; color:var(--muted);">📏 الطول</div>
-        <div style="font-size:0.95rem; font-weight:900; color:#fff; margin-top:3px;">${p.height}</div>
-      </div>
-      <div style="background:#070c18; border:1px solid #1e2d4a; border-radius:12px; padding:9px;">
-        <div style="font-size:0.7rem; color:var(--muted);">⚖️ الوزن</div>
-        <div style="font-size:0.95rem; font-weight:900; color:#fff; margin-top:3px;">${p.weight}</div>
-      </div>
-      <div style="background:#070c18; border:1px solid #1e2d4a; border-radius:12px; padding:9px;">
-        <div style="font-size:0.7rem; color:var(--muted);">🎂 العمر</div>
-        <div style="font-size:0.95rem; font-weight:900; color:#fff; margin-top:3px;">${p.age} سنة</div>
-      </div>
-      <div style="background:#070c18; border:1px solid #1e2d4a; border-radius:12px; padding:9px;">
-        <div style="font-size:0.7rem; color:var(--muted);">🌍 الجنسية</div>
-        <div style="font-size:0.92rem; font-weight:900; color:var(--accent-cyan); margin-top:3px;">${p.nationality}</div>
-      </div>
-    </div>
-
-    <!-- المؤشرات التكتيكية الستة (FIFA Attributes) -->
-    <div style="background:#080e1c; border:1px solid var(--card-border); border-radius:16px; padding:14px; margin-bottom:14px;">
-      <h4 style="font-size:0.9rem; color:var(--accent-gold); margin-bottom:12px;">🎮 المؤشرات التكتيكية والبدنية (FIFA Attributes):</h4>
-      ${statBarRow('⚡ السرعة والانطلاق (Pace)', f.pac, '#00e676')}
-      ${statBarRow('🎯 الهجوم والتسديد (Shooting)', f.sho, '#ffd600')}
-      ${statBarRow('📐 التمرير وصناعة اللعب (Passing)', f.pas, '#00d2ff')}
-      ${statBarRow('🪄 المراوغة والتحكم (Dribbling)', f.dri, '#38bdf8')}
-      ${statBarRow('🛡️ الصلابة الدفاعية (Defending)', f.def, '#c084fc')}
-      ${statBarRow('💪 القوة البدنية والالتحامات (Physical)', f.phy, '#fb7185')}
-    </div>
-
-    <!-- أرقام الموسم الحالي مع النادي من ESPN API -->
-    <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; background:#060a14; border:1px solid #1e2d4a; border-radius:14px; padding:12px; text-align:center;">
-      <div>
-        <div style="font-size:1.25rem; font-weight:900; color:var(--accent-cyan);">🛡️ ${p.matches || 0}</div>
-        <div style="font-size:0.72rem; color:var(--muted); font-weight:700;">مباريات الموسم</div>
-      </div>
-      <div style="border-right:1px solid #1e2d4a; border-left:1px solid #1e2d4a;">
-        <div style="font-size:1.25rem; font-weight:900; color:var(--accent-gold);">⚽ ${p.goals || 0}</div>
-        <div style="font-size:0.72rem; color:var(--muted); font-weight:700;">الأهداف المسجلة</div>
-      </div>
-      <div>
-        <div style="font-size:1.25rem; font-weight:900; color:var(--accent-green);">🎯 ${p.assists || 0}</div>
-        <div style="font-size:0.72rem; color:var(--muted); font-weight:700;">صناعة الأهداف</div>
+      <div style="height:8px; background:var(--surface-inset); border-radius:99px; overflow:hidden; border:1px solid var(--card-border);">
+        <div style="width:${Math.min(100, Number(val) || 0)}%; height:100%; background:${col}; border-radius:99px;"></div>
       </div>
     </div>
   `;
@@ -2410,30 +2313,38 @@ function openFifaPlayerModal(playerIdx) {
 // =========================================================
 let currentNewsItems = [];
 
+window._newsReqToken = 0;
+
 async function loadNewsFeed(forceRefresh = false) {
   const container = document.getElementById('news-container');
   if (!container) return;
+  const reqToken = ++window._newsReqToken;
 
   container.innerHTML = renderSkeletonCardsHtml(6);
 
   try {
     const res = await fetch(`/api/news?refresh=${forceRefresh}`);
     const data = await res.json();
+    if (reqToken !== window._newsReqToken) return;
     const list = data.news || [];
     currentNewsItems = list;
+
+    if (forceRefresh) {
+      loadHomeQuietHighlightsStrip(true);
+    }
 
     if (list.length === 0) {
       container.innerHTML = '<div class="loading-state" style="grid-column: 1/-1;">لا توجد أخبار متاحة حالياً.</div>';
       return;
     }
 
-     container.innerHTML = list.map((item, idx) => `
+    container.innerHTML = list.map((item, idx) => `
       <div class="news-item-card" onclick="openNewsArticle(${idx})">
-        ${item.image_url ? `<img src="${escapeHtml(item.image_url)}" class="news-card-thumb" onerror="this.style.display='none'">` : ''}
+        ${item.image_url ? `<img src="${escapeHtml(item.image_url)}" class="news-card-thumb" onerror="this.onerror=null; this.style.display='none';">` : ''}
         <div class="news-card-content">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
             <span style="font-size:0.72rem; color:var(--muted);">🕒 ${escapeHtml(item.published_time || 'حديثاً')}</span>
-<span class="hub-badge" style="color:var(--accent-gold-bright); font-size:0.68rem;">${escapeHtml(item.source || 'أخبار عالمية')}</span>
+            <span class="hub-badge" style="color:var(--accent-gold-bright); font-size:0.68rem;">${escapeHtml(item.source || 'أخبار عالمية')}</span>
           </div>
           <h3 class="news-card-title">${escapeHtml(item.title)}</h3>
           <p class="news-card-desc">${escapeHtml(item.summary || 'انقر لقراءة التقرير والتفاصيل الكاملة...')}</p>
@@ -2444,7 +2355,9 @@ async function loadNewsFeed(forceRefresh = false) {
       </div>
     `).join('');
   } catch (err) {
-    container.innerHTML = '<div class="loading-state" style="grid-column: 1/-1; color:var(--accent-red);">تعذر تحميل الأخبار، يرجى المحاولة لاحقاً.</div>';
+    if (reqToken === window._newsReqToken) {
+      container.innerHTML = '<div class="loading-state" style="grid-column: 1/-1; color:var(--accent-red);">تعذر تحميل الأخبار، يرجى المحاولة لاحقاً.</div>';
+    }
   }
 }
 
@@ -2466,33 +2379,12 @@ window.shareCurrentNewsArticle = async function() {
   } catch (e) {}
 };
 
-function openNewsArticle(idx) {
-  const item = currentNewsItems[idx];
+window.openNewsArticleByObj = function(item) {
   if (!item) return;
   window._activeNewsArticle = item;
 
-  let modal = document.getElementById('news-reader-modal');
-  // إنشاء النافذة ديناميكياً إذا لم تكن موجودة في ملف HTML
-  if (!modal) {
-    modal = document.createElement('div');
-    modal.id = 'news-reader-modal';
-    modal.className = 'modal-overlay';
-    modal.innerHTML = `
-      <div class="modal-content" style="max-width: 600px;">
-        <button class="close-btn" onclick="closeModal('news-reader-modal')">&times;</button>
-        <div id="news-modal-date" style="font-size:0.78rem; color:var(--accent-gold); margin-bottom:8px; font-weight:700;"></div>
-        <h3 id="news-modal-title" style="font-size:1.15rem; font-weight:900; line-height:1.5; margin-bottom:14px; color:#fff;"></h3>
-        <img id="news-modal-img" src="" style="width:100%; max-height:260px; object-fit:cover; border-radius:14px; margin-bottom:14px; display:none; border:1px solid var(--card-border);">
-        <p id="news-modal-body" style="font-size:0.92rem; line-height:1.8; color:#cbd5e1; margin-bottom:18px;"></p>
-        <div style="text-align:center;">
-          <a id="news-modal-link" href="#" target="_blank" rel="noopener noreferrer" class="ai-btn" style="text-decoration:none; display:inline-block;">
-            🌐 قراءة الخبر من المصدر الأصلي ↗
-          </a>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(modal);
-  }
+  const modal = document.getElementById('news-reader-modal');
+  if (!modal) return;
 
   const img = document.getElementById('news-modal-img');
   const title = document.getElementById('news-modal-title');
@@ -2500,8 +2392,8 @@ function openNewsArticle(idx) {
   const dateEl = document.getElementById('news-modal-date');
   const link = document.getElementById('news-modal-link');
 
-  if (title) title.innerText = item.title;
-  if (body) body.innerText = item.summary || item.title;
+  if (title) title.innerText = item.title || '';
+  if (body) body.innerText = item.summary || item.title || '';
   if (dateEl) dateEl.innerText = item.published_time ? `نُشر في: ${item.published_time}` : '';
 
   if (img) {
@@ -2524,15 +2416,22 @@ function openNewsArticle(idx) {
 
   modal.style.display = 'flex';
   document.body.style.overflow = 'hidden';
-}
+};
 
+function openNewsArticle(idx) {
+  const item = currentNewsItems[idx];
+  if (item) window.openNewsArticleByObj(item);
+}
 document.addEventListener('click', (e) => {
   if (e.target.classList && e.target.classList.contains('modal-overlay')) {
-    e.target.style.display = 'none';
-    document.body.style.overflow = '';
+    if (e.target.id && typeof window.closeModal === 'function') {
+      window.closeModal(e.target.id);
+    } else {
+      e.target.style.display = 'none';
+      document.body.style.overflow = '';
+    }
   }
 });
-
 // =========================================================
 // 8. محرك عرض الأرشيف التاريخي وموسوعة الدوريات الشاملة
 // =========================================================
@@ -2658,8 +2557,8 @@ async function loadLeagueHistory(leagueCode, forceRefresh = false) {
 
         <div class="history-tables-split">
           <div class="data-card" style="margin:0;">
-            <h4 style="font-size:0.92rem; color:var(--accent-gold-bright); margin-bottom:12px;">السجل الذهبي للأندية المتوجة (${titles.length})</h4>
-            class="table-container"
+           <h4 style="font-size:0.92rem; color:var(--accent-gold-bright); margin-bottom:12px;">السجل الذهبي للأندية المتوجة (${titles.length})</h4>
+            <div class="table-container">
               <table class="styled-table">
                 <thead>
                   <tr>
@@ -3049,7 +2948,7 @@ async function triggerRadarClash() {
     output.innerHTML = `
       <div class="radar-matchup-banner">
         <div class="radar-club-box">
-          <img src="${a.crest}" alt="${a.short}" onerror="this.src='https://via.placeholder.com/64?text=FC'">
+          <img src="${escapeHtml(a.crest)}" alt="${escapeHtml(a.short)}" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
           <div class="radar-club-name" style="color:var(--accent-green);">${a.short}</div>
           <div class="radar-club-sub dp-inline-league-tag" style="justify-content:center;">${typeof renderLeagueLogoHtml === 'function' ? renderLeagueLogoHtml(window._radarState.leagueA, a.league_flag, 'size-xs') : a.league_flag} <span>${escapeHtml(a.league_name)} • #${a.rank}</span></div>
           <div class="radar-overall-pill" style="border-color:var(--accent-green); color:var(--accent-green);">Overall: ${a.overall}</div>
@@ -3069,7 +2968,7 @@ async function triggerRadarClash() {
         </div>
 
         <div class="radar-club-box">
-          <img src="${b.crest}" alt="${b.short}" onerror="this.src='https://via.placeholder.com/64?text=FC'">
+         <img src="${escapeHtml(b.crest)}" alt="${escapeHtml(b.short)}" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
           <div class="radar-club-name" style="color:var(--accent-cyan);">${b.short}</div>
           <div class="radar-club-sub dp-inline-league-tag" style="justify-content:center;">${typeof renderLeagueLogoHtml === 'function' ? renderLeagueLogoHtml(window._radarState.leagueB, b.league_flag, 'size-xs') : b.league_flag} <span>${escapeHtml(b.league_name)} • #${b.rank}</span></div>
           <div class="radar-overall-pill" style="border-color:var(--accent-cyan); color:var(--accent-cyan);">Overall: ${b.overall}</div>
@@ -3261,44 +3160,39 @@ function switchMomentumSubTab(prefix, mode) {
 function renderMomentumWidgetHtml(prefix, data) {
   const waveSvg = buildMomentumWaveSvg(data.points, data.markers, data.home_team, data.away_team, data.is_projected);
   const shotSvg = buildShotMapPitchSvg(data.shots_map, data.home_team, data.away_team);
-  const badgeText = data.is_projected ? 'محاكاة تكتيكية 90د' : 'تقدير الزخم الإحصائي';
+  const badgeText = 'تقدير خوارزمي مبني على إحصائيات اللقاء';
 
   return `
     <div class="momentum-studio-box">
       <div class="momentum-box-header">
-        <div style="display:flex; align-items:center; gap:6px;">
+        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
           <span style="font-size:1.05rem;">📈</span>
-          <strong style="font-size:0.88rem; color:#fff;">منحنى الزخم الهجومي وخريطة التسديدات</strong>
-          <span class="hub-badge" style="color:var(--accent-gold); border-color:var(--accent-gold); font-size:0.65rem;">${badgeText}</span>
+          <strong style="font-size:0.88rem; color:var(--text);">منحنى الزخم الهجومي وخريطة التسديدات</strong>
+          <span class="hub-badge" style="color:var(--accent-gold-bright); border-color:var(--accent-gold); font-size:0.65rem;">${badgeText}</span>
         </div>
         <div class="momentum-sub-tabs">
-          <button id="${prefix}-btn-wave" class="mom-tab-btn active" onclick="switchMomentumSubTab('${prefix}', 'wave')">🌊 موجة الزخم</button>
-          <button id="${prefix}-btn-shot" class="mom-tab-btn" onclick="switchMomentumSubTab('${prefix}', 'shot')">🎯 خريطة التسديدات</button>
+          <button id="${escapeHtml(prefix)}-btn-wave" class="mom-tab-btn active" onclick="switchMomentumSubTab('${escapeHtml(prefix)}', 'wave')">🌊 موجة الزخم</button>
+          <button id="${escapeHtml(prefix)}-btn-shot" class="mom-tab-btn" onclick="switchMomentumSubTab('${escapeHtml(prefix)}', 'shot')">🎯 خريطة التسديدات</button>
         </div>
       </div>
 
       <div class="momentum-kpis-grid">
         <div class="mom-kpi-item" style="border-right:3px solid var(--accent-green);">
-          <div class="mom-kpi-lbl">هيمنة ${data.home_team}</div>
-          <div class="mom-kpi-val" style="color:var(--accent-green);">${data.home_dominance}% <span style="font-size:0.7rem; color:var(--muted);">(${data.peak_home_window})</span></div>
+          <div class="mom-kpi-lbl">هيمنة ${escapeHtml(data.home_team)}</div>
+          <div class="mom-kpi-val" style="color:var(--accent-green);">${escapeHtml(data.home_dominance)}% <span style="font-size:0.7rem; color:var(--muted);">(${escapeHtml(data.peak_home_window)})</span></div>
         </div>
         <div class="mom-kpi-item" style="border-right:3px solid var(--accent-gold);">
           <div class="mom-kpi-lbl">مؤشر الخطورة الهجومية</div>
-          <div class="mom-kpi-val" style="color:var(--accent-gold);">${data.threat_home} <span style="color:var(--muted); font-size:0.72rem;">ضد</span> ${data.threat_away}</div>
+          <div class="mom-kpi-val" style="color:var(--accent-gold-bright);">${escapeHtml(data.threat_home)} <span style="color:var(--muted); font-size:0.72rem;">ضد</span> ${escapeHtml(data.threat_away)}</div>
         </div>
         <div class="mom-kpi-item" style="border-right:3px solid var(--accent-cyan);">
-          <div class="mom-kpi-lbl">هيمنة ${data.away_team}</div>
-          <div class="mom-kpi-val" style="color:var(--accent-cyan);">${data.away_dominance}% <span style="font-size:0.7rem; color:var(--muted);">(${data.peak_away_window})</span></div>
+          <div class="mom-kpi-lbl">هيمنة ${escapeHtml(data.away_team)}</div>
+          <div class="mom-kpi-val" style="color:var(--accent-cyan);">${escapeHtml(data.away_dominance)}% <span style="font-size:0.7rem; color:var(--muted);">(${escapeHtml(data.peak_away_window)})</span></div>
         </div>
       </div>
 
-      <div id="${prefix}-wave-pane">
-        ${waveSvg}
-      </div>
-
-      <div id="${prefix}-shot-pane" style="display:none;">
-        ${shotSvg}
-      </div>
+      <div id="${escapeHtml(prefix)}-wave-pane">${waveSvg}</div>
+      <div id="${escapeHtml(prefix)}-shot-pane" style="display:none;">${shotSvg}</div>
     </div>
   `;
 }
@@ -3324,6 +3218,8 @@ window._mercatoState = {
   votesMap: {}
 };
 
+window._mercatoReqToken = 0;
+
 async function loadMercatoHub(forceRefresh = false) {
   const container = document.getElementById('transfers-hub-container');
   if (!container) return;
@@ -3333,11 +3229,13 @@ async function loadMercatoHub(forceRefresh = false) {
     return;
   }
 
+  const reqToken = ++window._mercatoReqToken;
   container.innerHTML = '<div class="loading-state">✈️ جاري تحميل بورصة الانتقالات العالمية وسجلات تجديد العقود...</div>';
 
   try {
     const res = await fetch(`/api/mercato?refresh=${forceRefresh}`);
     const data = await res.json();
+    if (reqToken !== window._mercatoReqToken) return;
     if (data && data.status === 'success') {
       window._mercatoState.transfersList = data.transfers || [];
       window._mercatoState.contractsList = data.contracts || [];
@@ -3347,7 +3245,9 @@ async function loadMercatoHub(forceRefresh = false) {
       container.innerHTML = '<div class="loading-state" style="color:var(--accent-red);">تعذر تحميل بيانات بورصة الانتقالات حالياً.</div>';
     }
   } catch (e) {
-    container.innerHTML = '<div class="loading-state" style="color:var(--accent-red);">حدث خطأ في الاتصال بالسيرفر، يرجى المحاولة لاحقاً.</div>';
+    if (reqToken === window._mercatoReqToken) {
+      container.innerHTML = '<div class="loading-state" style="color:var(--accent-red);">حدث خطأ في الاتصال بالسيرفر، يرجى المحاولة لاحقاً.</div>';
+    }
   }
 }
 
@@ -3386,7 +3286,7 @@ function renderMercatoWorkspace() {
   const isTransfersPage = st.subPage === 'transfers';
 
   const tickerHtml = (st.tickerNews || []).map(item => `
-    <span class="ticker-item">${item}</span>
+    <span class="ticker-item">${escapeHtml(item)}</span>
   `).join('<span style="color:var(--accent-gold); margin:0 8px;">•</span>');
 
   const regionChips = [
@@ -3522,149 +3422,139 @@ function renderMercatoCardsGrid() {
       'failed': { cls: 'status-failed', pillCls: 'pill-failed', reasonCls: 'reason-failed', arrowIcon: '✖️' }
     };
     const sMeta = statusMap[item.status] || statusMap['talks'];
+    const safeId = escapeHtml(item.id);
+    const pageKey = isTransfersPage ? 'transfers' : 'contracts';
 
     if (isTransfersPage) {
-      // ==================== تصميم بطاقة الانتقال العصرية الواضحة ====================
       const notePrefix = item.status === 'failed'
         ? '🚫 سبب فشل الصفقة:'
         : (item.status === 'done' ? '✅ تفاصيل الصفقة:' : '⏳ آخر التطورات:');
 
       return `
-        <div class="transfer-card ${sMeta.cls}" onclick="openMercatoDetailModal('transfers', '${item.id}')">
-          <!-- 1. رأس البطاقة: اللاعب/المدرب + حالة الصفقة -->
+        <div class="transfer-card ${sMeta.cls}" data-mid="${safeId}" onclick="openMercatoDetailModal('${pageKey}', this.dataset.mid)">
           <div class="t-card-top">
             <div class="t-person-box">
               <div class="t-avatar-wrap">
-                <img src="${item.avatar}" alt="${item.name}" onerror="this.src='https://ui-avatars.com/api/?name=P&background=1e293b&color=fff&rounded=true'">
+                <img src="${escapeHtml(item.avatar)}" alt="${escapeHtml(item.name)}" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
               </div>
               <div style="min-width:0;">
                 <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                  <span class="t-person-name">${item.name}</span>
+                  <span class="t-person-name">${escapeHtml(item.name)}</span>
                   ${roleBadge}
                 </div>
-                <div class="t-person-sub">${item.position} • ${item.age ? `${item.age} سنة • ` : ''}${item.nationality}</div>
+                <div class="t-person-sub">${escapeHtml(item.position)} • ${item.age ? `${escapeHtml(item.age)} سنة • ` : ''}${escapeHtml(item.nationality)}</div>
               </div>
             </div>
-            <span class="t-status-pill ${sMeta.pillCls}">${item.status_label}</span>
+            <span class="t-status-pill ${sMeta.pillCls}">${escapeHtml(item.status_label)}</span>
           </div>
 
-          <!-- 2. جسر الانتقال البصري الواضح (من النادي السابق ⬅️ إلى النادي الجديد) -->
           <div class="transfer-bridge-box">
             <div class="t-club-node">
               <div class="t-club-role-hint">النادي السابق</div>
-              <img src="${item.from_crest}" alt="${item.from_club}" onerror="this.src='https://ui-avatars.com/api/?name=FC&background=1e293b&color=fff&rounded=true'">
-              <div class="t-club-name">${item.from_club}</div>
+              <img src="${escapeHtml(item.from_crest)}" alt="${escapeHtml(item.from_club)}" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
+              <div class="t-club-name">${escapeHtml(item.from_club)}</div>
             </div>
 
             <div class="t-arrow-tunnel">
-              <span class="t-deal-type-lbl">${item.deal_type}</span>
+              <span class="t-deal-type-lbl">${escapeHtml(item.deal_type)}</span>
               <div class="t-animated-arrow ${item.status === 'failed' ? 'arrow-failed' : ''}">
                 <span class="arrow-line"></span>
                 <span class="arrow-head">${sMeta.arrowIcon}</span>
               </div>
-              <span class="t-fee-lbl">${item.fee}</span>
+              <span class="t-fee-lbl">${escapeHtml(item.fee)}</span>
             </div>
 
             <div class="t-club-node">
               <div class="t-club-role-hint" style="color:var(--accent-cyan);">النادي الجديد</div>
-              <img src="${item.to_crest}" alt="${item.to_club}" onerror="this.src='https://ui-avatars.com/api/?name=FC&background=1e293b&color=fff&rounded=true'">
-              <div class="t-club-name" style="color:#fff;">${item.to_club}</div>
+              <img src="${escapeHtml(item.to_crest)}" alt="${escapeHtml(item.to_club)}" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
+              <div class="t-club-name" style="color:var(--text);">${escapeHtml(item.to_club)}</div>
             </div>
           </div>
 
-          <!-- 3. كبسولات الشروط الأساسية (مدة العقد + الراتب) -->
           <div class="t-terms-grid">
             <div class="t-term-item">
               <span class="t-term-lbl">📅 مدة العقد</span>
-              <span class="t-term-val">${item.contract_length}</span>
+              <span class="t-term-val">${escapeHtml(item.contract_length)}</span>
             </div>
             <div class="t-term-item">
               <span class="t-term-lbl">💰 الراتب</span>
-              <span class="t-term-val" style="color:var(--accent-green);">${item.salary}</span>
+              <span class="t-term-val" style="color:var(--accent-green);">${escapeHtml(item.salary)}</span>
             </div>
           </div>
 
-          <!-- 4. صندوق السبب أو الملخص المباشر -->
           <div class="t-reason-banner ${sMeta.reasonCls}">
-            <strong>${notePrefix}</strong> ${item.status_reason}
+            <strong>${notePrefix}</strong> ${escapeHtml(item.status_reason)}
           </div>
 
-          <!-- 5. شريط البطولة والمصدر السفلي -->
           <div class="t-card-footer">
-            <span class="t-league-chip">${item.league_tag || '🌍 ميركاتو عالمي'}</span>
+            <span class="t-league-chip">${escapeHtml(item.league_tag || '🌍 ميركاتو عالمي')}</span>
             <span class="t-more-hint">التفاصيل والشروط ⬅️</span>
           </div>
         </div>
       `;
     } else {
-      // ==================== تصميم بطاقة تجديد العقد الواضحة ====================
       const notePrefix = item.status === 'failed'
         ? '🚫 سبب تعثر التجديد:'
         : (item.status === 'done' ? '✍️ بنود التجديد:' : '⏳ موقف التجديد:');
 
       return `
-        <div class="transfer-card ${sMeta.cls}" onclick="openMercatoDetailModal('contracts', '${item.id}')">
-          <!-- 1. رأس البطاقة -->
+        <div class="transfer-card ${sMeta.cls}" data-mid="${safeId}" onclick="openMercatoDetailModal('${pageKey}', this.dataset.mid)">
           <div class="t-card-top">
             <div class="t-person-box">
               <div class="t-avatar-wrap">
-                <img src="${item.avatar}" alt="${item.name}" onerror="this.src='https://ui-avatars.com/api/?name=P&background=1e293b&color=fff&rounded=true'">
+                <img src="${escapeHtml(item.avatar)}" alt="${escapeHtml(item.name)}" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
               </div>
-           <div style="min-width:0;">
+              <div style="min-width:0;">
                 <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                  <span class="t-person-name">${item.name}</span>
+                  <span class="t-person-name">${escapeHtml(item.name)}</span>
                   ${roleBadge}
                 </div>
-                <div class="t-person-sub">${item.position} • ${item.age ? `${item.age} سنة • ` : ''}${item.nationality}</div>
+                <div class="t-person-sub">${escapeHtml(item.position)} • ${item.age ? `${escapeHtml(item.age)} سنة • ` : ''}${escapeHtml(item.nationality)}</div>
               </div>
             </div>
-            <span class="t-status-pill ${sMeta.pillCls}">${item.status_label}</span>
+            <span class="t-status-pill ${sMeta.pillCls}">${escapeHtml(item.status_label)}</span>
           </div>
 
-          <!-- 2. بطاقة النادي ومسار تمديد العقد (واضحة ومميزة عن الانتقالات) -->
           <div class="renewal-showcase-box">
             <div class="renewal-club-side">
-              <img src="${item.from_crest}" alt="${item.from_club}" onerror="this.src='https://ui-avatars.com/api/?name=FC&background=1e293b&color=fff&rounded=true'">
+              <img src="${escapeHtml(item.from_crest)}" alt="${escapeHtml(item.from_club)}" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
               <div>
                 <div style="font-size:0.7rem; color:var(--muted); font-weight:700;">النادي الحالي</div>
-                <div style="font-size:0.92rem; font-weight:900; color:#fff;">${item.from_club}</div>
+                <div style="font-size:0.92rem; font-weight:900; color:var(--text);">${escapeHtml(item.from_club)}</div>
               </div>
             </div>
 
             <div class="renewal-timeline-side">
               <div class="renewal-dates-row">
-                <span class="old-date-tag">${item.old_expiry}</span>
+                <span class="old-date-tag">${escapeHtml(item.old_expiry)}</span>
                 <span style="color:var(--accent-cyan); font-weight:900;">⬅️</span>
-                <span class="new-date-tag ${item.status === 'failed' ? 'date-failed' : ''}">${item.new_expiry}</span>
+                <span class="new-date-tag ${item.status === 'failed' ? 'date-failed' : ''}">${escapeHtml(item.new_expiry)}</span>
               </div>
-              <div style="font-size:0.73rem; color:var(--accent-gold); font-weight:800; margin-top:4px;">
-                ${item.contract_length}
+              <div style="font-size:0.73rem; color:var(--accent-gold-bright); font-weight:800; margin-top:4px;">
+                ${escapeHtml(item.contract_length)}
               </div>
             </div>
           </div>
 
-          <!-- 3. الشروط المالية للتجديد -->
           <div class="t-terms-grid">
             <div class="t-term-item">
               <span class="t-term-lbl">💵 الراتب</span>
-              <span class="t-term-val" style="color:var(--accent-green);">${item.salary}</span>
+              <span class="t-term-val" style="color:var(--accent-green);">${escapeHtml(item.salary)}</span>
             </div>
             <div class="t-term-item">
               <span class="t-term-lbl">🔒 الشرط الجزائي</span>
-              <span class="t-term-val" style="color:var(--accent-gold);">${item.release_clause}</span>
+              <span class="t-term-val" style="color:var(--accent-gold-bright);">${escapeHtml(item.release_clause)}</span>
             </div>
           </div>
 
-          <!-- 4. ملخص المفاوضات أو سبب الرفض -->
           <div class="t-reason-banner ${sMeta.reasonCls}">
-            <strong>${notePrefix}</strong> ${item.status_reason}
+            <strong>${notePrefix}</strong> ${escapeHtml(item.status_reason)}
           </div>
 
-          <!-- 5. شريط البطولة والتعديل المالي -->
           <div class="t-card-footer">
-            <span class="t-league-chip">${item.league_tag || '🌍 عقود عالمية'}</span>
+            <span class="t-league-chip">${escapeHtml(item.league_tag || '🌍 عقود عالمية')}</span>
             <span style="font-size:0.74rem; font-weight:800; color:${(item.salary_change || '').includes('⬇️') ? 'var(--accent-red)' : 'var(--accent-green)'};">
-              ${item.salary_change}
+              ${escapeHtml(item.salary_change)}
             </span>
           </div>
         </div>
@@ -3683,20 +3573,22 @@ function openMercatoDetailModal(pageType, itemId) {
   if (!item) return;
 
   const savedVotes = getSavedMercatoVotes();
-const votes = savedVotes[item.id] || window._mercatoState.votesMap[item.id] || { up: item.likes || 142, down: item.dislikes || 19, userVote: null };
+  const votes = savedVotes[item.id] || window._mercatoState.votesMap[item.id] || { up: item.likes || 142, down: item.dislikes || 19, userVote: null };
   const totalV = Math.max(1, votes.up + votes.down);
   const upPct = Math.round((votes.up / totalV) * 100);
+  const safeId = escapeHtml(item.id);
+  const safePage = escapeHtml(pageType);
 
- body.innerHTML = `
+  body.innerHTML = `
     <div style="display:flex; align-items:center; gap:14px; border-bottom:1px solid var(--card-border); padding-bottom:14px; margin-bottom:16px; padding-left:42px;">
-      <img src="${escapeHtml(item.avatar)}" width="64" height="64" style="border-radius:50%; object-fit:cover; border:2px solid var(--accent-cyan); background:#080d1a;" onerror="this.src='https://ui-avatars.com/api/?name=P&background=1e293b&color=fff&rounded=true'">
+      <img src="${escapeHtml(item.avatar)}" width="64" height="64" style="border-radius:50%; object-fit:cover; border:2px solid var(--accent-cyan); background:var(--surface-inset);" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
       <div style="flex:1;">
         <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
-          <h3 style="font-size:1.2rem; font-weight:900; color:#fff;">${item.name}</h3>
-          <span class="hub-badge" style="color:var(--accent-gold); border-color:var(--accent-gold);">${item.status_label}</span>
+          <h3 style="font-size:1.2rem; font-weight:900; color:var(--text);">${escapeHtml(item.name)}</h3>
+          <span class="hub-badge" style="color:var(--accent-gold-bright); border-color:var(--accent-gold);">${escapeHtml(item.status_label)}</span>
         </div>
         <div style="font-size:0.82rem; color:var(--muted); margin-top:4px;">
-       ${item.role === 'coach' ? '👔 مدير فني' : '⚽ لاعب'} • ${item.position}${item.age ? ` • ${item.age} سنة` : ''} • ${item.nationality}
+          ${item.role === 'coach' ? '👔 مدير فني' : '⚽ لاعب'} • ${escapeHtml(item.position)}${item.age ? ` • ${escapeHtml(item.age)} سنة` : ''} • ${escapeHtml(item.nationality)}
         </div>
       </div>
     </div>
@@ -3705,81 +3597,81 @@ const votes = savedVotes[item.id] || window._mercatoState.votesMap[item.id] || {
       <div class="transfer-bridge-box" style="margin-bottom:16px; padding:14px;">
         <div class="t-club-node">
           <div class="t-club-role-hint">من نادي</div>
-          <img src="${item.from_crest}" width="44" height="44">
-          <div class="t-club-name" style="font-size:0.9rem;">${item.from_club}</div>
+          <img src="${escapeHtml(item.from_crest)}" width="44" height="44" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
+          <div class="t-club-name" style="font-size:0.9rem;">${escapeHtml(item.from_club)}</div>
         </div>
         <div class="t-arrow-tunnel">
-          <span class="t-deal-type-lbl" style="font-size:0.78rem;">${item.deal_type}</span>
-        <div style="font-size:1.3rem; margin:4px 0;">${item.status === 'failed' ? '✖️' : '⬅️'}</div>
-          <span class="t-fee-lbl" style="font-size:0.82rem; color:var(--accent-gold);">${item.fee}</span>
+          <span class="t-deal-type-lbl" style="font-size:0.78rem;">${escapeHtml(item.deal_type)}</span>
+          <div style="font-size:1.3rem; margin:4px 0;">${item.status === 'failed' ? '✖️' : '⬅️'}</div>
+          <span class="t-fee-lbl" style="font-size:0.82rem; color:var(--accent-gold-bright);">${escapeHtml(item.fee)}</span>
         </div>
         <div class="t-club-node">
           <div class="t-club-role-hint" style="color:var(--accent-cyan);">إلى نادي</div>
-          <img src="${item.to_crest}" width="44" height="44">
-          <div class="t-club-name" style="font-size:0.9rem; color:#fff;">${item.to_club}</div>
+          <img src="${escapeHtml(item.to_crest)}" width="44" height="44" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
+          <div class="t-club-name" style="font-size:0.9rem; color:var(--text);">${escapeHtml(item.to_club)}</div>
         </div>
       </div>
     ` : `
       <div class="renewal-showcase-box" style="margin-bottom:16px; padding:14px;">
         <div class="renewal-club-side">
-          <img src="${item.from_crest}" width="42" height="42">
+          <img src="${escapeHtml(item.from_crest)}" width="42" height="42" onerror="this.onerror=null; this.src=window.DEFAULT_CLUB_CREST;">
           <div>
             <div style="font-size:0.75rem; color:var(--muted);">نادي التجديد</div>
-            <div style="font-size:1rem; font-weight:900; color:#fff;">${item.from_club}</div>
+            <div style="font-size:1rem; font-weight:900; color:var(--text);">${escapeHtml(item.from_club)}</div>
           </div>
         </div>
         <div class="renewal-timeline-side">
           <div class="renewal-dates-row">
-            <span class="old-date-tag">${item.old_expiry}</span>
+            <span class="old-date-tag">${escapeHtml(item.old_expiry)}</span>
             <span>⬅️</span>
-            <span class="new-date-tag ${item.status === 'failed' ? 'date-failed' : ''}">${item.new_expiry}</span>
+            <span class="new-date-tag ${item.status === 'failed' ? 'date-failed' : ''}">${escapeHtml(item.new_expiry)}</span>
           </div>
-          <div style="font-size:0.78rem; color:var(--accent-gold); font-weight:800; margin-top:4px;">${item.contract_length}</div>
+          <div style="font-size:0.78rem; color:var(--accent-gold-bright); font-weight:800; margin-top:4px;">${escapeHtml(item.contract_length)}</div>
         </div>
       </div>
     `}
 
-    <div style="background:#080d1a; border:1px solid var(--card-border); border-radius:14px; padding:14px; margin-bottom:14px;">
+    <div class="dp-modal-panel" style="margin-bottom:14px;">
       <div style="font-weight:900; color:var(--accent-cyan); margin-bottom:10px; font-size:0.9rem;">📋 البنود المالية والتعاقدية الكاملة:</div>
       <div class="t-terms-grid" style="margin-bottom:10px;">
         <div class="t-term-item">
           <span class="t-term-lbl">${pageType === 'transfers' ? '💵 قيمة الصفقة' : '📈 تعديل الراتب'}</span>
-          <span class="t-term-val" style="color:var(--accent-green);">${pageType === 'transfers' ? item.fee : item.salary_change}</span>
+          <span class="t-term-val" style="color:var(--accent-green);">${escapeHtml(pageType === 'transfers' ? item.fee : item.salary_change)}</span>
         </div>
         <div class="t-term-item">
           <span class="t-term-lbl">💰 الراتب السنوي</span>
-          <span class="t-term-val">${item.salary}</span>
+          <span class="t-term-val">${escapeHtml(item.salary)}</span>
         </div>
         <div class="t-term-item">
           <span class="t-term-lbl">📅 مدة العقد</span>
-          <span class="t-term-val">${item.contract_length}</span>
+          <span class="t-term-val">${escapeHtml(item.contract_length)}</span>
         </div>
         <div class="t-term-item">
           <span class="t-term-lbl">🔒 الشرط الجزائي</span>
-          <span class="t-term-val" style="color:var(--accent-gold);">${item.release_clause || 'غير معلن'}</span>
+          <span class="t-term-val" style="color:var(--accent-gold-bright);">${escapeHtml(item.release_clause || 'غير معلن')}</span>
         </div>
       </div>
-      <div style="background:#060a14; border:1px solid #18253f; border-radius:10px; padding:10px; font-size:0.82rem; color:#cbd5e1; line-height:1.6;">
-        <strong style="color:#fff;">📌 الشروط والامتيازات:</strong> ${item.conditions}
+      <div class="dp-modal-subpanel">
+        <strong style="color:var(--text);">📌 الشروط والامتيازات:</strong> ${escapeHtml(item.conditions)}
       </div>
     </div>
 
-    <div style="background:#090e1a; border-right:4px solid ${item.status === 'failed' ? 'var(--accent-red)' : 'var(--accent-gold)'}; padding:12px 14px; border-radius:10px; margin-bottom:16px; font-size:0.85rem; line-height:1.65; color:#e2e8f0;">
-      <div style="font-weight:900; color:${item.status === 'failed' ? 'var(--accent-red)' : 'var(--accent-gold)'}; margin-bottom:4px;">
+    <div class="dp-modal-panel" style="border-right:4px solid ${item.status === 'failed' ? 'var(--accent-red)' : 'var(--accent-gold)'}; margin-bottom:16px; font-size:0.85rem; line-height:1.65; color:var(--text-secondary);">
+      <div style="font-weight:900; color:${item.status === 'failed' ? 'var(--accent-red)' : 'var(--accent-gold-bright)'}; margin-bottom:4px;">
         ${item.status === 'failed' ? '🚫 سبب فشل وتعثر المفاوضات:' : '🕵️‍♂️ كواليس الصفقة والتفاصيل:'}
       </div>
-      <div>${item.status_reason}</div>
-      <div style="font-size:0.74rem; color:var(--muted); margin-top:6px;">📡 المصدر: <strong style="color:#fff;">${item.source}</strong> (موثوقية ${item.reliability}%)</div>
+      <div>${escapeHtml(item.status_reason)}</div>
+      <div style="font-size:0.74rem; color:var(--muted); margin-top:6px;">📡 المصدر: <strong style="color:var(--text);">${escapeHtml(item.source)}</strong> (موثوقية ${escapeHtml(item.reliability)}%)</div>
     </div>
 
-    <div style="background:#070b15; border:1px solid #162238; border-radius:14px; padding:12px 14px;">
+    <div class="dp-modal-panel">
       <div style="display:flex; justify-content:space-between; font-size:0.8rem; font-weight:800; margin-bottom:8px;">
         <span>📊 تصويت زوار المنصة على الصفقة:</span>
         <span id="mercato-vote-pct" style="color:var(--accent-green);">${upPct}% يؤيدون الخطوة</span>
       </div>
       <div class="vote-btn-group">
-        <button id="mercato-vote-up-btn" type="button" class="mercato-vote-btn ${votes.userVote === 'up' ? 'is-voted-up' : ''}" onclick="voteMercatoItem('${item.id}', 'up', '${pageType}')">🔥 صفقة رابحة (${votes.up})</button>
-        <button id="mercato-vote-down-btn" type="button" class="mercato-vote-btn ${votes.userVote === 'down' ? 'is-voted-down' : ''}" onclick="voteMercatoItem('${item.id}', 'down', '${pageType}')">👎 غير موفقة (${votes.down})</button>
+        <button id="mercato-vote-up-btn" type="button" class="mercato-vote-btn ${votes.userVote === 'up' ? 'is-voted-up' : ''}" data-mid="${safeId}" data-pt="${safePage}" onclick="voteMercatoItem(this.dataset.mid, 'up', this.dataset.pt)">🔥 صفقة رابحة (${votes.up})</button>
+        <button id="mercato-vote-down-btn" type="button" class="mercato-vote-btn ${votes.userVote === 'down' ? 'is-voted-down' : ''}" data-mid="${safeId}" data-pt="${safePage}" onclick="voteMercatoItem(this.dataset.mid, 'down', this.dataset.pt)">👎 غير موفقة (${votes.down})</button>
       </div>
     </div>
   `;
@@ -5448,29 +5340,57 @@ function registerPWAEngine() {
   };
 
   // إيماءة السحب للأسفل لإغلاق النوافذ السفلية على الجوال (Swipe-to-Dismiss Bottom Sheets)
+  // إيماءة السحب للأسفل لإغلاق النوافذ السفلية على الجوال بدون تعارض مع التمرير الداخلي
   function initMobileBottomSheetGestures() {
+    let startX = 0;
     let startY = 0;
     let deltaY = 0;
+    let lockedOut = false;
     let activeSheet = null;
 
+    function hasScrolledAncestor(target, stopAt) {
+      let node = target;
+      while (node && node !== stopAt) {
+        if (node.scrollTop > 2) return true;
+        node = node.parentElement;
+      }
+      return Boolean(stopAt && stopAt.scrollTop > 2);
+    }
+
     document.addEventListener('touchstart', (e) => {
-      if (window.innerWidth > 768) return;
+      if (window.innerWidth > 768 || !e.touches || e.touches.length !== 1) return;
       const sheet = e.target.closest('.modal-content');
-      if (!sheet || sheet.scrollTop > 2) return;
-      const innerScroll = e.target.closest('.dp-mc-modal-body');
-      if (innerScroll && innerScroll.scrollTop > 2) return;
+      if (!sheet) return;
+
+      // تجاهل اللمس على الحقول والأشرطة المنزلقة والجداول الأفقية وقوائم البحث
+      if (e.target.closest('input, select, textarea, .table-container, .dp-subtabs, .dp-ev-filters, .dp-search-results, .quiz-review-list')) {
+        return;
+      }
+      if (hasScrolledAncestor(e.target, sheet)) return;
+
       activeSheet = sheet;
+      startX = e.touches[0].clientX;
       startY = e.touches[0].clientY;
       deltaY = 0;
+      lockedOut = false;
       activeSheet.style.transition = 'none';
     }, { passive: true });
 
     document.addEventListener('touchmove', (e) => {
-      if (!activeSheet) return;
-      const diff = e.touches[0].clientY - startY;
-      if (diff > 0) {
-        deltaY = diff;
-        activeSheet.style.transform = `translateY(${Math.min(diff, 260)}px)`;
+      if (!activeSheet || lockedOut || !e.touches || e.touches.length !== 1) return;
+      const dx = Math.abs(e.touches[0].clientX - startX);
+      const dy = e.touches[0].clientY - startY;
+
+      // إذا كانت حركة الإصبع أفقية أو للأعلى، نلغي سحب النافذة فوراً
+      if (dy < 0 || dx > Math.max(12, dy * 0.75)) {
+        lockedOut = true;
+        activeSheet.style.transform = '';
+        return;
+      }
+
+      if (dy > 8) {
+        deltaY = dy;
+        activeSheet.style.transform = `translateY(${Math.min(dy, 260)}px)`;
       }
     }, { passive: true });
 
@@ -5479,12 +5399,17 @@ function registerPWAEngine() {
       const sheet = activeSheet;
       activeSheet = null;
       sheet.style.transition = 'transform 0.2s ease';
-      if (deltaY > 95) {
+
+      if (!lockedOut && deltaY > 95) {
         const overlay = sheet.closest('.modal-overlay');
         sheet.style.transform = '';
         if (overlay) {
-          overlay.style.display = 'none';
-          document.body.style.overflow = '';
+          if (overlay.id && typeof window.closeModal === 'function') {
+            window.closeModal(overlay.id);
+          } else {
+            overlay.style.display = 'none';
+            document.body.style.overflow = '';
+          }
         }
       } else {
         sheet.style.transform = '';

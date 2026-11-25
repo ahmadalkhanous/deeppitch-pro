@@ -1,19 +1,15 @@
-
 import os
 import time
 import json
-import hashlib
 import threading
 import urllib.request
+from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional
-import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import database as db
 from engine_core import (
@@ -32,6 +28,7 @@ async def lifespan(app_instance: FastAPI):
 
 app = FastAPI(title="DeepPitch Multi-League Analytics Platform", lifespan=lifespan)
 
+
 @app.get("/static/manifest.json")
 def manifest_file():
     if os.path.exists("manifest.json"):
@@ -40,35 +37,66 @@ def manifest_file():
         return FileResponse("static/manifest.json", media_type="application/json")
     return Response(content="{}", media_type="application/json")
 
+
 if os.path.exists("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# تفعيل CORS بشكل متوافق مع معايير المتصفحات الحديثة
+# يمكن تقييد النطاقات لاحقاً عبر متغير البيئة ALLOWED_ORIGINS="https://yourdomain.com"
+_raw_origins = os.environ.get("ALLOWED_ORIGINS", "*").strip()
+_allowed_origins = ["*"] if _raw_origins == "*" else [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+_MAIN_LOCK = threading.Lock()
 RESPONSE_CACHE = {}
 CACHE_TTL_SECONDS = 1800
 
 TODAYS_MATCHES_CACHE = {}
-TODAY_CACHE_TTL = 30
+TODAY_CACHE_TTL = 35
 LAST_FORCE_REFRESH_TS = {"news": 0.0, "mercato": 0.0, "cards": 0.0}
 FORCE_REFRESH_COOLDOWN = 60  # السماح بالتحديث الإجباري مرة كل 60 ثانية كحد أقصى
+
+_AI_RATE_LIMITS = defaultdict(list)
+
+
+def check_ai_rate_limit(request: Request, max_requests: int = 12, window_sec: int = 60):
+    """حماية مسارات الذكاء الاصطناعي من الاستنزاف (حد 12 طلباً في الدقيقة لكل IP)"""
+    fwd = request.headers.get("x-forwarded-for", "")
+    client_ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "unknown")
+    now_ts = time.time()
+    cutoff = now_ts - window_sec
+
+    with _MAIN_LOCK:
+        if len(_AI_RATE_LIMITS) > 1000:
+            stale_ips = [ip for ip, ts_list in _AI_RATE_LIMITS.items() if not ts_list or ts_list[-1] < cutoff]
+            for ip in stale_ips:
+                _AI_RATE_LIMITS.pop(ip, None)
+
+        recent = [ts for ts in _AI_RATE_LIMITS[client_ip] if ts > cutoff]
+        if len(recent) >= max_requests:
+            raise HTTPException(
+                status_code=429,
+                detail="تجاوزت الحد المسموح من طلبات الذكاء الاصطناعي، يرجى المحاولة بعد دقيقة."
+            )
+        recent.append(now_ts)
+        _AI_RATE_LIMITS[client_ip] = recent
 
 
 def can_force_refresh(scope_key: str, requested: bool) -> bool:
     if not requested:
         return False
     now_ts = time.time()
-    last_ts = LAST_FORCE_REFRESH_TS.get(scope_key, 0.0)
-    if (now_ts - last_ts) > FORCE_REFRESH_COOLDOWN:
-        LAST_FORCE_REFRESH_TS[scope_key] = now_ts
-        return True
+    with _MAIN_LOCK:
+        last_ts = LAST_FORCE_REFRESH_TS.get(scope_key, 0.0)
+        if (now_ts - last_ts) > FORCE_REFRESH_COOLDOWN:
+            LAST_FORCE_REFRESH_TS[scope_key] = now_ts
+            return True
     return False
 
 
@@ -102,8 +130,11 @@ def get_gameweek_predictions(league_code: str, refresh: bool = False):
     now = time.time()
     cache_key = f"gw_{league_code}"
     allow_refresh = can_force_refresh(cache_key, refresh)
-    if not allow_refresh and cache_key in RESPONSE_CACHE and (now - RESPONSE_CACHE[cache_key]["time"] < CACHE_TTL_SECONDS):
-        return RESPONSE_CACHE[cache_key]["payload"]
+    if not allow_refresh:
+        with _MAIN_LOCK:
+            cached_gw = RESPONSE_CACHE.get(cache_key)
+        if cached_gw and (now - cached_gw["time"] < CACHE_TTL_SECONDS):
+            return cached_gw["payload"]
 
     fixtures = db.get_gameweek_fixtures(league_code, force_refresh=allow_refresh)
     if not fixtures:
@@ -178,7 +209,8 @@ def get_gameweek_predictions(league_code: str, refresh: bool = False):
         })
 
     payload = {"league_code": league_code, "fixtures": results}
-    RESPONSE_CACHE[cache_key] = {"payload": payload, "time": now}
+    with _MAIN_LOCK:
+        RESPONSE_CACHE[cache_key] = {"payload": payload, "time": now}
     return payload
 
 
@@ -254,17 +286,23 @@ def get_safe_accumulator(league_code: str):
 
 @app.get("/api/today_matches")
 @app.get("/api/todays_matches")
-def get_todays_matches(date: str = ""):
+def get_todays_matches(date: str = "", refresh: bool = False):
     now_ts = time.time()
     date_key = (date or "today").strip()[:10]
     ttl = TODAY_CACHE_TTL if date_key == "today" else 300
+    allow_refresh = can_force_refresh(f"today_{date_key}", refresh)
 
-    cached_entry = TODAYS_MATCHES_CACHE.get(date_key)
-    if cached_entry and (now_ts - cached_entry["time"] < ttl):
-        return cached_entry["data"]
+    if not allow_refresh:
+        with _MAIN_LOCK:
+            cached_entry = TODAYS_MATCHES_CACHE.get(date_key)
+        if cached_entry and (now_ts - cached_entry["time"] < ttl):
+            return cached_entry["data"]
 
     try:
-        raw_matches = db.get_todays_matches(target_date="" if date_key == "today" else date_key)
+        raw_matches = db.get_todays_matches(
+            target_date="" if date_key == "today" else date_key,
+            force_refresh=allow_refresh
+        )
         if not raw_matches or not isinstance(raw_matches, list):
             raw_matches = []
     except Exception as e:
@@ -283,11 +321,14 @@ def get_todays_matches(date: str = ""):
     raw_matches.sort(key=sort_priority)
 
     payload = {"status": "success", "date": date_key, "matches": raw_matches}
-    TODAYS_MATCHES_CACHE[date_key] = {"data": payload, "time": now_ts}
-    if len(TODAYS_MATCHES_CACHE) > 20:
-        oldest = min(TODAYS_MATCHES_CACHE.keys(), key=lambda k: TODAYS_MATCHES_CACHE[k]["time"])
-        TODAYS_MATCHES_CACHE.pop(oldest, None)
-    return payload
+    with _MAIN_LOCK:
+        TODAYS_MATCHES_CACHE[date_key] = {"data": payload, "time": now_ts}
+        if len(TODAYS_MATCHES_CACHE) > 20:
+            oldest = min(TODAYS_MATCHES_CACHE.keys(), key=lambda k: TODAYS_MATCHES_CACHE[k]["time"])
+            TODAYS_MATCHES_CACHE.pop(oldest, None)
+    return payload  
+
+
 
 @app.get("/api/match_stats/{league_code}/{match_id}")
 def get_match_stats_route(league_code: str, match_id: str):
@@ -332,8 +373,8 @@ def get_season_projections_route(league_code: str, refresh: bool = False):
 # =========================================================================
 
 class MatchAnalysisRequest(BaseModel):
-    home_team: str
-    away_team: str
+    home_team: str = Field(..., min_length=1, max_length=80)
+    away_team: str = Field(..., min_length=1, max_length=80)
     home_prob: float
     draw_prob: float
     away_prob: float
@@ -341,14 +382,15 @@ class MatchAnalysisRequest(BaseModel):
     away_xg: float
     home_elo: float
     away_elo: float
-    edge_label: str = ""
-    edge_reason: str = ""
-    streak_text: str = ""
+    edge_label: str = Field(default="", max_length=120)
+    edge_reason: str = Field(default="", max_length=400)
+    streak_text: str = Field(default="", max_length=300)
 
 
 @app.post("/api/ai_analysis")
-def generate_ai_tactical_analysis(req: MatchAnalysisRequest):
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+def generate_ai_tactical_analysis(req: MatchAnalysisRequest, request: Request):
+    check_ai_rate_limit(request, max_requests=12, window_sec=60)
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
 
     if gemini_key:
         try:
@@ -358,7 +400,7 @@ def generate_ai_tactical_analysis(req: MatchAnalysisRequest):
 الأهداف المتوقعة (xG): {req.home_team} ({req.home_xg}) مقابل {req.away_team} ({req.away_xg})
 فارق تصنيف الـ Elo: {req.home_team} ({req.home_elo}) مقابل {req.away_team} ({req.away_elo})
 رادار المباراة: {req.edge_label} - {req.edge_reason}
-سجل المواجهات المباشرة: {req.streak_text}
+مؤشر التكافؤ: {req.streak_text}
 
 اكتب تحليلاً جذاباً يجمع بين الرؤية الفنية لمدربي كرة القدم وقراءة الأرقام الواقعية دون مقدمات أو سرد جاف للنقاط."""
 
@@ -370,7 +412,7 @@ def generate_ai_tactical_analysis(req: MatchAnalysisRequest):
                 data=payload,
                 headers={"Content-Type": "application/json"}
             )
-            with urllib.request.urlopen(api_req, timeout=6.0) as res:
+            with urllib.request.urlopen(api_req, timeout=6.0, context=db.SSL_CONTEXT) as res:
                 body = json.loads(res.read().decode("utf-8"))
                 text = body["candidates"][0]["content"]["parts"][0]["text"]
                 return {"analysis": text.strip()}
@@ -388,7 +430,7 @@ def generate_ai_tactical_analysis(req: MatchAnalysisRequest):
     else:
         tactical_view = f"مواجهة تكتيكية متوازنة للغاية تحسمها تفاصيل دقيقة؛ تقارب نسب الاستحواذ والأهداف المتوقعة يجعل معركة خط الوسط والكرات الثابتة هي الفيصل لتحديد الطرف المنتصر."
 
-    full_insight = f"{tactical_view} تاريخياً، {req.streak_text}"
+    full_insight = f"{tactical_view} {req.streak_text}".strip()
     return {"analysis": full_insight}
 
 
@@ -397,14 +439,15 @@ def generate_ai_tactical_analysis(req: MatchAnalysisRequest):
 # =========================================================================
 
 class ScoutQueryRequest(BaseModel):
-    message: str
-    league_code: str = "PL"
+    message: str = Field(..., min_length=1, max_length=300)
+    league_code: str = Field(default="PL", max_length=10)
 
 
 @app.post("/api/ai_scout")
-def query_ai_scout(req: ScoutQueryRequest):
+def query_ai_scout(req: ScoutQueryRequest, request: Request):
+    check_ai_rate_limit(request, max_requests=12, window_sec=60)
     try:
-        code = req.league_code or "PL"
+        code = (req.league_code or "PL").upper()
 
         standings_raw = getattr(db, "get_official_standings", lambda c: [])(code)
         standings = standings_raw.get("standings", []) if isinstance(standings_raw, dict) else (standings_raw or [])
@@ -425,12 +468,12 @@ def query_ai_scout(req: ScoutQueryRequest):
         by_attack = sorted(valid_st, key=lambda x: x.get("gf", 0) / max(1, x.get("played", 1)), reverse=True)
         by_weak_def = sorted(valid_st, key=lambda x: x.get("ga", 0) / max(1, x.get("played", 1)), reverse=True)
 
-        easiest_fdr = ", ".join([
+        strongest_attack = ", ".join([
             f"{t.get('short_name', 'نادي')} ({t.get('gf', 0)} هدفاً)"
             for t in by_attack[:3]
-        ]) if by_attack else "الفرق المتقدمة"
+        ]) if by_attack else "الأندية المتصدرة"
 
-        hardest_fdr = ", ".join([
+        weakest_defense = ", ".join([
             f"{t.get('short_name', 'نادي')} (استقبل {t.get('ga', 0)} هدفاً)"
             for t in by_weak_def[:3]
         ]) if by_weak_def else "أندية المؤخرة"
@@ -438,21 +481,21 @@ def query_ai_scout(req: ScoutQueryRequest):
         league_info = getattr(db, "LEAGUE_CODES", {}).get(code, {})
         league_name = league_info.get("name", "الدوري")
 
-        gemini_key = os.environ.get("GEMINI_API_KEY", "")
+        gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
         if gemini_key:
             try:
                 prompt = f"""أنت 'السكاوت الرياضي ومستشار الفانتازي' لمنصة DeepPitch Pro.
 سؤال المستخدم: "{req.message}"
-بيانات {league_name}:
+بيانات {league_name} الحقيقية:
 - صدارة الهدافين: {top_3_scorers}
-- أسهل جدول قادم (FDR): {easiest_fdr}
-- أصعب جدول قادم (FDR): {hardest_fdr}
+- أقوى خطوط الهجوم (معدل التسجيل): {strongest_attack}
+- أضعف خطوط الدفاع (أكثر استقبالاً للأهداف): {weakest_defense}
 
-أجب باختصار في سطرين إلى 3 أسطر بنصيحة فانتازي مباشرة وعملية."""
+أجب باختصار في سطرين إلى 3 أسطر بنصيحة فانتازي مباشرة وعملية بناءً على هذه الأرقام فقط."""
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
                 payload = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
                 api_req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-                with urllib.request.urlopen(api_req, timeout=5.0) as res:
+                with urllib.request.urlopen(api_req, timeout=5.0, context=db.SSL_CONTEXT) as res:
                     body = json.loads(res.read().decode("utf-8"))
                     reply_text = body["candidates"][0]["content"]["parts"][0]["text"].strip()
                     return {"reply": reply_text}
@@ -461,27 +504,30 @@ def query_ai_scout(req: ScoutQueryRequest):
 
         msg = req.message.lower()
         if any(k in msg for k in ["كابتن", "تشكيلة", "شراء", "فانتازي"]):
-            reply = f"🎯 خيار الكابتن الأبرز للجولة: الأرقام ترشح بقوة **{top_3_scorers}**؛ كما يمتلك **{easiest_fdr}** أفضل جدول مواجهات قادمة بحسب مؤشر FDR."
-        elif any(k in msg for k in ["تعثر", "مفاجأة", "صدمة", "فخ"]):
-            reply = f"⚠️ رادار الصدمات: احذر من عناصر أندية **{hardest_fdr}**؛ جدول مبارياتهم القادم يضعهم أمام اختبارات صعبة جداً ومعدل فقدان النقاط مرتفع."
-        elif any(k in msg for k in ["جدول", "fdr", "مباريات", "صعوبة"]):
-            reply = f"🗓️ تقييم الجداول: المسار الأسهل للجولات القادمة يصب في صالح **{easiest_fdr}**، بينما يواجه **{hardest_fdr}** أصعب مسار مباريات."
+            reply = f"🎯 خيار الكابتن الأبرز للجولة: الأرقام ترشح بقوة **{top_3_scorers}**؛ كما تتصدر أندية **{strongest_attack}** قائمة أقوى خطوط الهجوم في البطولة."
+        elif any(k in msg for k in ["تعثر", "مفاجأة", "صدمة", "فخ", "دفاع"]):
+            reply = f"⚠️ رادار الدفاع: استهدف مهاجمين يواجهون أندية **{weakest_defense}** كونها الأكثر استقبالاً للأهداف هذا الموسم، وتجنّب مدافعيها."
+        elif any(k in msg for k in ["هجوم", "هداف", "أهداف"]):
+            reply = f"🔥 مؤشر الهجوم: الأقوى تهديفياً حالياً هي **{strongest_attack}**، ويتصدر الهدافين **{top_3_scorers}**."
         else:
-            reply = f"📊 تقرير السكاوت لـ {league_name}: هدافو البطولة: **{top_3_scorers}**، وأفضل جدول مباريات قادم يملكه **{easiest_fdr}**."
+            reply = f"📊 تقرير السكاوت لـ {league_name}: صدارة الهدافين: **{top_3_scorers}**، أقوى هجوم: **{strongest_attack}**، وأضعف دفاع: **{weakest_defense}**."
 
         return {"reply": reply}
 
     except Exception as e:
         print(f"❌ استثناء في السكاوت: {e}")
         return {"reply": "🤖 مرحباً بك! بناءً على أرقام الجولة الحالية، يُنصح باختيار عناصر الأندية الأعلى تهديفاً ومراقبة رادار التعثر في صفحة مباريات الجولة."}
+
+
 # =========================================================================
 # مسار صحيفة الجولة الذكية (AI Matchweek Gazette API)
 # =========================================================================
 
 @app.get("/api/ai_newspaper/{league_code}")
-def get_ai_matchweek_newspaper(league_code: str):
+def get_ai_matchweek_newspaper(league_code: str, request: Request):
+    check_ai_rate_limit(request, max_requests=10, window_sec=60)
     try:
-        code = league_code or "PL"
+        code = (league_code or "PL").upper()
         info = getattr(db, "LEAGUE_CODES", {}).get(code, {})
         league_name = info.get("name", "الدوري")
         flag = info.get("flag", "⚽")
@@ -501,7 +547,7 @@ def get_ai_matchweek_newspaper(league_code: str):
         leader = standings[0].get("short_name", "المتصدر") if standings else "المتصدر"
         chaser = standings[1].get("short_name", "الوصيف") if len(standings) > 1 else "الملاحق"
 
-        gemini_key = os.environ.get("GEMINI_API_KEY", "")
+        gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
         if gemini_key:
             try:
                 matches_str = " | ".join(match_summaries[:4])
@@ -523,7 +569,7 @@ def get_ai_matchweek_newspaper(league_code: str):
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
                 payload = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
                 api_req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-                with urllib.request.urlopen(api_req, timeout=6.0) as res:
+                with urllib.request.urlopen(api_req, timeout=6.0, context=db.SSL_CONTEXT) as res:
                     body = json.loads(res.read().decode("utf-8"))
                     text = body["candidates"][0]["content"]["parts"][0]["text"].strip()
                     return {
@@ -541,7 +587,7 @@ def get_ai_matchweek_newspaper(league_code: str):
 يدخل {leader} هذه الجولة وهو يعلم تماماً أن أي نزيف للنقاط سيمنح غريمه المباشر {chaser} فرصة ذهبية لتقليص الفارق وخطف الأسبقية النفسية. تشير نماذج الأداء الهجومي للطرفين إلى أن الجولة الحالية قد تشهد تحولات جذرية في جدول الترتيب العام نظراً لتقارب فوارق الأهداف المتوقعة (xG).
 
 ⚠️ **رادار الفخاخ وتحذير الأرقام:**
-يرصد رادار المنصة التكتيكي خطورة بالغة على الفرق الكبرى التي تخوض لقاءاتها خارج الديار؛ حيث أظهرت مصفوفة صعوبة المباريات (FDR) أن أندية وسط الجدول تلعب بأريحية كاملة وتعتمد على تضييق المساحات والضربات الخاطفة، مما يجعل احتمالية حدوث تعثر مفاجئ تتجاوز حاجز الـ 35% في أكثر من مواجهة.
+يرصد رادار المنصة التكتيكي خطورة بالغة على الفرق الكبرى التي تخوض لقاءاتها خارج الديار؛ حيث تلعب أندية وسط الجدول بأريحية كاملة وتعتمد على تضييق المساحات والضربات الخاطفة، مما يرفع احتمالية حدوث تعثر مفاجئ في أكثر من مواجهة.
 
 🎯 **كلمة العدد:**
 جولة حسم بامتياز، تفاصيلها التكتيكية الصغيرة ستحسم مواجهات كبرى، ومن يملك النفس الأطول والصلابة الدفاعية سيحجز بطاقة الأمان قبل دخول معترك الجولات القادمة."""
@@ -551,12 +597,11 @@ def get_ai_matchweek_newspaper(league_code: str):
             "content": article
         }
 
-    except Exception as err:
+    except Exception:
         return {
             "headline": "صحيفة DeepPitch الرياضية",
             "content": "جاري تجهيز مقالات وتحليلات الجولة من غرفة الأخبار الرياضية..."
         }
-
 
 @app.get("/api/match_lineups/{league_code}/{match_id}")
 def get_match_lineups_route(league_code: str, match_id: str):
@@ -821,7 +866,30 @@ def get_ai_pundit_studio_route(league_code: str, match_id: str, phase: str = "au
 
 
 @app.post("/api/ai_studio_ask")
-def ask_studio_pundit_route(req: StudioAskRequest):
+
+class StudioAskRequest(BaseModel):
+    league_code: str = Field(default="PL", max_length=10)
+    match_id: str = Field(..., min_length=1, max_length=40)
+    pundit_id: str = Field(default="tactician", max_length=30)
+    question: str = Field(..., min_length=1, max_length=300)
+
+
+@app.get("/api/ai_studio/{league_code}/{match_id}")
+def get_ai_pundit_studio_route(league_code: str, match_id: str, phase: str = "auto"):
+    try:
+        data = db.get_ai_pundit_studio_analysis(
+            league_code=league_code.upper(),
+            match_id=match_id,
+            requested_phase=phase.lower()
+        )
+        return {"status": "success", "data": data}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/ai_studio_ask")
+def ask_studio_pundit_route(req: StudioAskRequest, request: Request):
+    check_ai_rate_limit(request, max_requests=12, window_sec=60)
     try:
         res = db.ask_studio_pundit_question(
             league_code=req.league_code.upper(),
@@ -833,62 +901,7 @@ def ask_studio_pundit_route(req: StudioAskRequest):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-    # =========================================================================
-# مسارات مركز بطاقات الأندية والمنتخبات واللاعبين (Cards Hub API)
-# =========================================================================
-
-# =========================================================================
-# مسارات مركز بطاقات المنتخبات والأندية ولاعبي فيفا (Cards Hub API)
-# =========================================================================
-
-@app.get("/api/cards_hub")
-def get_cards_hub_route(
-    sub_type: str = "nations",
-    league: str = "PL",
-    team_id: str = "",
-    team_name: str = "",
-    query: str = "",
-    refresh: bool = False
-):
-    try:
-        st = (sub_type or "nations").lower()
-        lg = (league or "PL").upper()
-
-        now_ts = time.time()
-        allow_refresh = False
-        if refresh and (now_ts - LAST_FORCE_REFRESH_TS["cards"] > FORCE_REFRESH_COOLDOWN):
-            allow_refresh = True
-            LAST_FORCE_REFRESH_TS["cards"] = now_ts
-
-        if st == "nations":
-            items = db.get_live_top_100_nations_cards(force_refresh=allow_refresh)
-        elif st == "clubs":
-            items = db.get_live_clubs_cards(league_code=lg, force_refresh=allow_refresh)
-        elif st == "squad":
-            items = db.get_live_club_squad_fifa_cards(
-                league_code=lg,
-                team_id=team_id,
-                team_name=team_name,
-                force_refresh=allow_refresh
-            )
-        else:
-            if team_id:
-                items = db.get_live_club_squad_fifa_cards(
-                    league_code=lg,
-                    team_id=team_id,
-                    team_name=team_name,
-                    force_refresh=allow_refresh
-                )
-            else:
-                items = db.get_live_players_cards(
-                    league_code=lg,
-                    search_query=query,
-                    force_refresh=allow_refresh
-                )
-
-        return {"status": "success", "sub_type": st, "items": items}
-    except Exception as e:
-        return {"status": "error", "items": [], "message": str(e)}
+ 
 @app.get("/api/card_profile_detail")
 def get_card_profile_detail_route(
     entity_type: str = "club",

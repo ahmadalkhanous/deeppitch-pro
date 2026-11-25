@@ -1,13 +1,22 @@
-// ==========================================
-// DeepPitch Pro - API & Global State Manager
-// ==========================================
-
 let activeLeague = "PL";
 let activeSection = null;
-let currentFixtures = [];
-let activeFixtureForModal = null;
-let currentRequestToken = 0;
 let todayPollingTimeout = null;
+
+// شعار SVG محلي بديل عن via.placeholder.com المعطّل لمنع حلقات الأخطاء
+window.DEFAULT_CLUB_CREST =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E" +
+  "%3Crect width='40' height='40' rx='10' fill='%23121a2b'/%3E" +
+  "%3Ctext x='20' y='25' text-anchor='middle' fill='%2310b981' font-family='sans-serif' " +
+  "font-size='14' font-weight='bold'%3EFC%3C/text%3E%3C/svg%3E";
+
+window.escapeHtml = function(str) {
+  return String(str !== undefined && str !== null ? str : '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+};
 
 // كاش المتصفح المركزي لمنع تكرار طلبات الشبكة
 const BROWSER_CACHE = {
@@ -144,12 +153,16 @@ async function loadLeagues() {
     const bar = document.getElementById('league-bar');
     if (!bar) return;
 
-    bar.innerHTML = (data.leagues || []).map(l => `
-      <button class="league-btn ${l.code === activeLeague ? 'active' : ''}" data-league="${l.code}" onclick="selectLeague('${l.code}')">
-        ${window.renderLeagueLogoHtml(l.code, l.flag_emoji, 'size-sm', l.logo)}
-        <span>${l.name}</span>
-      </button>
-    `).join('');
+    bar.innerHTML = (data.leagues || []).map(l => {
+      const safeCode = window.escapeHtml(l.code);
+      const safeName = window.escapeHtml(l.name);
+      return `
+        <button class="league-btn ${l.code === activeLeague ? 'active' : ''}" data-league="${safeCode}" onclick="selectLeague(this.dataset.league)">
+          ${window.renderLeagueLogoHtml(l.code, l.flag_emoji, 'size-sm', l.logo)}
+          <span>${safeName}</span>
+        </button>
+      `;
+    }).join('');
 
     hydrateDynamicLeagueLogos();
   } catch (e) {

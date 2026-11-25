@@ -1,4 +1,4 @@
-const CACHE_NAME = 'deeppitch-static-v4';
+const CACHE_NAME = 'deeppitch-static-v5';
 const CORE_ASSETS = [
   '/',
   '/static/css/style.css',

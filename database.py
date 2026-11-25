@@ -14,6 +14,7 @@ import os
 import random
 import html
 import urllib.parse
+import unicodedata
 from html.parser import HTMLParser
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 DB_FILE = "football_platform.db"
 CACHE_TTL = 1800
+
+DEFAULT_CLUB_CREST = (
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E"
+    "%3Crect width='40' height='40' rx='10' fill='%23121a2b'/%3E"
+    "%3Ctext x='20' y='25' text-anchor='middle' fill='%2310b981' font-family='sans-serif' "
+    "font-size='14' font-weight='bold'%3EFC%3C/text%3E%3C/svg%3E"
+)
 
 LEAGUE_CODES = {
     "PL": {"espn": "eng.1", "name": "Premier League", "flag": "🏴󠁧󠁢󠁥󠁮󠁧󠁿"},
@@ -46,6 +54,8 @@ COMPETITION_FORMAT_RULES = {
 
 _RAM_CACHE = {}
 _DB_LOCK = threading.Lock()
+_CACHE_LOCK = threading.Lock()
+_HYDRATING_MATCH_IDS = set()
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -76,87 +86,105 @@ def get_connection():
         pass
     return conn
 
+
 def init_db():
     with _DB_LOCK:
         conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS leagues (
-            code TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            flag_emoji TEXT NOT NULL
-        );
-        """)
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS api_cache (
-            cache_key TEXT PRIMARY KEY,
-            payload TEXT NOT NULL,
-            updated_at REAL NOT NULL
-        );
-        """)
-        # حذف الكاش المنتهي الصلاحية فقط (الأقدم من 24 ساعة) بدلاً من مسح الكاش الحي عند كل تشغيل
-        cutoff_ts = time.time() - 86400
-        cursor.execute("DELETE FROM api_cache WHERE updated_at < ?;", (cutoff_ts,))
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS leagues (
+                code TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                flag_emoji TEXT NOT NULL
+            );
+            """)
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS api_cache (
+                cache_key TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            """)
+            cutoff_ts = time.time() - 86400
+            cursor.execute("DELETE FROM api_cache WHERE updated_at < ?;", (cutoff_ts,))
 
-        for code, info in LEAGUE_CODES.items():
-            cursor.execute("INSERT OR REPLACE INTO leagues VALUES (?, ?, ?);", (code, info["name"], info["flag"]))
-        conn.commit()
-        conn.close()
+            for code, info in LEAGUE_CODES.items():
+                cursor.execute("INSERT OR REPLACE INTO leagues VALUES (?, ?, ?);", (code, info["name"], info["flag"]))
+            conn.commit()
+        finally:
+            conn.close()
 
     init_news_table()
     load_persistent_cache_to_ram()
+
 
 def load_persistent_cache_to_ram():
     try:
         with _DB_LOCK:
             conn = get_connection()
-            rows = conn.execute("SELECT cache_key, payload, updated_at FROM api_cache;").fetchall()
-            conn.close()
-        for r in rows:
-            _RAM_CACHE[r["cache_key"]] = {
-                "data": json.loads(r["payload"]),
-                "time": float(r["updated_at"])
-            }
+            try:
+                rows = conn.execute("SELECT cache_key, payload, updated_at FROM api_cache;").fetchall()
+            finally:
+                conn.close()
+        with _CACHE_LOCK:
+            for r in rows:
+                _RAM_CACHE[r["cache_key"]] = {
+                    "data": json.loads(r["payload"]),
+                    "time": float(r["updated_at"])
+                }
     except Exception:
         pass
 
+
 MAX_RAM_CACHE_ITEMS = 250
+
 
 def save_to_cache(cache_key, data):
     now = time.time()
-    _RAM_CACHE[cache_key] = {"data": data, "time": now}
-    if len(_RAM_CACHE) > MAX_RAM_CACHE_ITEMS:
-        oldest_keys = sorted(_RAM_CACHE.keys(), key=lambda k: _RAM_CACHE[k]["time"])[:40]
-        for k in oldest_keys:
-            _RAM_CACHE.pop(k, None)
+    with _CACHE_LOCK:
+        _RAM_CACHE[cache_key] = {"data": data, "time": now}
+        if len(_RAM_CACHE) > MAX_RAM_CACHE_ITEMS:
+            oldest_keys = sorted(_RAM_CACHE.keys(), key=lambda k: _RAM_CACHE[k]["time"])[:40]
+            for k in oldest_keys:
+                _RAM_CACHE.pop(k, None)
     try:
         payload_str = json.dumps(data, ensure_ascii=False)
         with _DB_LOCK:
             conn = get_connection()
-            conn.execute(
-                "INSERT OR REPLACE INTO api_cache (cache_key, payload, updated_at) VALUES (?, ?, ?);",
-                (cache_key, payload_str, now)
-            )
-            conn.commit()
-            conn.close()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO api_cache (cache_key, payload, updated_at) VALUES (?, ?, ?);",
+                    (cache_key, payload_str, now)
+                )
+                conn.commit()
+            finally:
+                conn.close()
     except Exception:
         pass
 
+
 def get_from_cache(cache_key, ttl=CACHE_TTL):
-    entry = _RAM_CACHE.get(cache_key)
+    with _CACHE_LOCK:
+        entry = _RAM_CACHE.get(cache_key)
     if entry:
         is_fresh = (time.time() - entry["time"]) < ttl
         return entry["data"], is_fresh
     return None, False
 
+
 def get_all_leagues():
-    conn = get_connection()
-    leagues = conn.execute("SELECT * FROM leagues;").fetchall()
-    conn.close()
+    with _DB_LOCK:
+        conn = get_connection()
+        try:
+            leagues = conn.execute("SELECT * FROM leagues;").fetchall()
+        finally:
+            conn.close()
     order = list(LEAGUE_CODES.keys())
     result = [dict(l) for l in leagues]
     result.sort(key=lambda x: order.index(x["code"]) if x["code"] in order else 99)
     return result
+    
 
 def fetch_json_fast(url, timeout=5.0):
     for attempt in range(2):
@@ -317,12 +345,15 @@ def _extract_grouped_entries(data, league_code):
 
         elif league_code == "ACL":
             for idx, (raw_title, ents) in enumerate(raw_leaves):
-                if "west" in raw_title.lower() or "غرب" in raw_title or idx == 0:
-                    g_name = "منطقة الغرب"
-                    lvl = "WEST"
+                low_t = (raw_title or "").lower()
+                if "east" in low_t or "شرق" in low_t:
+                    g_name, lvl = "منطقة الشرق", "EAST"
+                elif "west" in low_t or "غرب" in low_t:
+                    g_name, lvl = "منطقة الغرب", "WEST"
+                elif idx == 0:
+                    g_name, lvl = "منطقة الغرب", "WEST"
                 else:
-                    g_name = "منطقة الشرق"
-                    lvl = "EAST"
+                    g_name, lvl = "منطقة الشرق", "EAST"
                 groups_out.append({"group_name": g_name, "level_code": lvl, "entries": ents})
 
         elif league_code == "CAF":
@@ -435,7 +466,7 @@ def get_official_standings(league_code, force_refresh=False):
                 clean_form = [ch for ch in form_raw.upper() if ch in ("W", "D", "L")]
                 form_list = clean_form[-5:] if len(clean_form) >= 3 else generate_form_from_pts(pts / gp_div)
 
-                crest = "https://via.placeholder.com/40?text=FC"
+                crest = DEFAULT_CLUB_CREST
                 logos = team_data.get("logos", [])
                 if logos and isinstance(logos, list) and isinstance(logos[0], dict):
                     crest = logos[0].get("href", crest)
@@ -680,11 +711,11 @@ def get_gameweek_fixtures(league_code, force_refresh=False):
 
             home_name = home_team_raw["team"]["displayName"]
             home_short = home_team_raw["team"].get("shortDisplayName", home_name)
-            home_crest = home_team_raw["team"].get("logo", "https://via.placeholder.com/60?text=FC")
+            home_crest = home_team_raw["team"].get("logo") or DEFAULT_CLUB_CREST
 
             away_name = away_team_raw["team"]["displayName"]
             away_short = away_team_raw["team"].get("shortDisplayName", away_name)
-            away_crest = away_team_raw["team"].get("logo", "https://via.placeholder.com/60?text=FC")
+            away_crest = away_team_raw["team"].get("logo") or DEFAULT_CLUB_CREST
 
             match_time_raw = event.get("date", "")
             formatted_time = match_time_raw
@@ -798,7 +829,7 @@ def get_top_scorers(league_code, force_refresh=False):
             player_name = athlete.get("displayName") or athlete.get("fullName") or item.get("displayName", "لاعب")
             team_name = team.get("shortDisplayName") or team.get("displayName") or team.get("name", "")
 
-            crest = "https://via.placeholder.com/25?text=FC"
+            crest = DEFAULT_CLUB_CREST
             logos = team.get("logos", [])
             if logos and isinstance(logos, list) and len(logos) > 0 and isinstance(logos[0], dict):
                 crest = logos[0].get("href", crest)
@@ -837,7 +868,7 @@ def background_warm_all_leagues():
         try:
             with ThreadPoolExecutor(max_workers=5) as ex:
                 tasks = [
-                    ex.submit(get_todays_matches),
+                    ex.submit(get_todays_matches, "", not first_run),
                     ex.submit(sync_and_get_news, False),
                 ]
                 if first_run:
@@ -854,9 +885,9 @@ def background_warm_all_leagues():
 
     _warm_cycle(first_run=True)
 
-    # تحديث هادئ لمباريات اليوم في الخلفية كل 5 دقائق لتسريع الاستجابة للزوار
+    # تحديث هادئ لمباريات اليوم في الخلفية كل 3 دقائق لتسريع الاستجابة للزوار
     while True:
-        time.sleep(300)
+        time.sleep(180)
         _warm_cycle(first_run=False)
 
 # =========================================================================
@@ -1017,7 +1048,6 @@ _COMMENTATOR_VARIANTS_MAP = {
     "عامر عبد الله": "عامر عبدالله",
 }
 
-import unicodedata
 
 CHANNEL_REGEX = re.compile(
     r"(beIN\s*Sports?\s*(?:HD|Premium|AFC|Xtra|Extra|Max|English|French)?\s*\d+(?:\s*HD)?"
@@ -1868,6 +1898,74 @@ def lookup_match_broadcast_on_demand(
         save_to_cache(miss_k, result)
     return result
 _TODAY_RAW_EVENTS = {}
+MAX_TODAY_RAW_EVENTS = 250
+
+
+def _store_today_raw_event(event_id: str, payload: dict):
+    with _CACHE_LOCK:
+        _TODAY_RAW_EVENTS[event_id] = payload
+        if len(_TODAY_RAW_EVENTS) > MAX_TODAY_RAW_EVENTS:
+            excess = len(_TODAY_RAW_EVENTS) - (MAX_TODAY_RAW_EVENTS - 50)
+            for old_k in list(_TODAY_RAW_EVENTS.keys())[:excess]:
+                _TODAY_RAW_EVENTS.pop(old_k, None)
+
+
+def _hydrate_missing_commentators_bg(matches_to_hydrate: list):
+    """جلب المعلقين والقنوات الموثقة في الخلفية دون حجب أو إبطاء فتح الصفحة الرئيسية"""
+    pending = []
+    with _CACHE_LOCK:
+        for m_obj in matches_to_hydrate:
+            mid = m_obj["id"]
+            if mid not in _HYDRATING_MATCH_IDS:
+                _HYDRATING_MATCH_IDS.add(mid)
+                pending.append(dict(m_obj))
+    if not pending:
+        return
+
+    def _worker():
+        try:
+            def _hydrate_one(m_copy):
+                mid = m_copy["id"]
+                try:
+                    with _CACHE_LOCK:
+                        ev_meta = dict(_TODAY_RAW_EVENTS.get(mid) or {})
+                    bcast = lookup_match_broadcast_on_demand(
+                        m_copy["league_code"],
+                        mid,
+                        m_copy.get("home_en", ""),
+                        m_copy.get("away_en", ""),
+                        m_copy.get("state", "pre"),
+                        yk_url=ev_meta.get("yk_url", ""),
+                        fg_url=ev_meta.get("fg_url", ""),
+                        scores365_id=ev_meta.get("scores365_id", ""),
+                        home_ar=ev_meta.get("home_ar", ""),
+                        away_ar=ev_meta.get("away_ar", ""),
+                        existing_channel=m_copy.get("channel", ""),
+                        existing_ch_verified=bool(m_copy.get("channel_verified"))
+                    )
+                    with _CACHE_LOCK:
+                        target_meta = _TODAY_RAW_EVENTS.get(mid)
+                        if target_meta:
+                            if bcast.get("channel_verified"):
+                                target_meta["channel"] = bcast["channel"]
+                                target_meta["channel_verified"] = True
+                            if bcast.get("commentator_verified"):
+                                target_meta["commentator"] = bcast["commentator"]
+                                target_meta["commentator_verified"] = True
+                except Exception:
+                    pass
+                finally:
+                    with _CACHE_LOCK:
+                        _HYDRATING_MATCH_IDS.discard(mid)
+
+            with ThreadPoolExecutor(max_workers=4) as ex_h:
+                list(ex_h.map(_hydrate_one, pending))
+        except Exception:
+            with _CACHE_LOCK:
+                for item in pending:
+                    _HYDRATING_MATCH_IDS.discard(item["id"])
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 def _safe_int(val, default=0):
     if val is None:
@@ -1956,6 +2054,10 @@ def _extract_stats_and_goals_from_event(event, summary_data=None):
         return {
             "has_stats": False,
             "state": "pre",
+            "home_score": "-",
+            "away_score": "-",
+            "display_clock": "",
+            "status_text": "لم تبدأ بعد",
             "message": "⏳ لم تبدأ المباراة بعد — ستتوفر الإحصائيات الحية فور انطلاق صافرة البداية.",
             "home": {
                 "possession": 0, "shots": 0, "shots_on_target": 0, "corners": 0,
@@ -2098,9 +2200,22 @@ def _extract_stats_and_goals_from_event(event, summary_data=None):
     rc_h = _safe_int(stats_map_h.get("redcards"), rc_h)
     rc_a = _safe_int(stats_map_a.get("redcards"), rc_a)
 
+    st_node = (comp.get("status") if isinstance(comp, dict) else None) or (event.get("status") if isinstance(event, dict) else None) or {}
+    disp_clock = str(st_node.get("displayClock") or "").strip()
+    if state == "in":
+        st_text = f"مباشر {disp_clock}" if disp_clock else "جارية الآن"
+    elif state == "post":
+        st_text = "انتهت"
+    else:
+        st_text = "لم تبدأ بعد"
+
     return {
         "has_stats": has_real_stats,
         "state": state,
+        "home_score": str(h_score),
+        "away_score": str(a_score),
+        "display_clock": disp_clock,
+        "status_text": st_text,
         "home": {
             "possession": round(pos_h, 1),
             "shots": shots_h,
@@ -2127,7 +2242,7 @@ def _extract_stats_and_goals_from_event(event, summary_data=None):
         "away_goals": away_goals
     }
 
-def get_todays_matches(target_date: str = ""):
+def get_todays_matches(target_date: str = "", force_refresh: bool = False):
     now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     now_local = now_utc + timedelta(hours=3)
     today_iso_local = now_local.strftime("%Y-%m-%d")
@@ -2144,12 +2259,29 @@ def get_todays_matches(target_date: str = ""):
             is_custom_date = False
             target_dt_local = now_local
 
-    if is_custom_date:
-        dates_to_fetch = [target_dt_local.strftime("%Y%m%d")]
-    else:
-        today_str = now_local.strftime("%Y%m%d")
-        yesterday_str = (now_local - timedelta(days=1)).strftime("%Y%m%d")
-        dates_to_fetch = [yesterday_str, today_str]
+    target_day_iso = target_dt_local.strftime("%Y-%m-%d")
+    cache_key = f"todays_matches_v5_{target_day_iso}"
+    cache_ttl = 300 if is_custom_date else 35
+
+    cached_matches, is_fresh = get_from_cache(cache_key, ttl=cache_ttl)
+    if cached_matches is not None and is_fresh and not force_refresh:
+        # دمج أي معلق أو قناة تم التحقق منها في الخلفية فوراً دون انتظار انتهاء الكاش
+        with _CACHE_LOCK:
+            for m_obj in cached_matches:
+                meta = _TODAY_RAW_EVENTS.get(m_obj["id"])
+                if meta:
+                    if meta.get("channel_verified"):
+                        m_obj["channel"] = meta["channel"]
+                        m_obj["channel_verified"] = True
+                    if meta.get("commentator_verified"):
+                        m_obj["commentator"] = meta["commentator"]
+                        m_obj["commentator_verified"] = True
+        return cached_matches
+
+    # جلب اليوم المختار + اليوم السابق لتغطية جميع مباريات فرق التوقيت (UTC+3) بدقة
+    prev_day_str = (target_dt_local - timedelta(days=1)).strftime("%Y%m%d")
+    target_day_str = target_dt_local.strftime("%Y%m%d")
+    dates_to_fetch = [prev_day_str, target_day_str]
 
     all_today_matches = []
     scraped_broadcast_blocks = _scrape_live_arabic_broadcast_tables(target_dt_local)
@@ -2170,12 +2302,6 @@ def get_todays_matches(target_date: str = ""):
                     event_id = str(event.get("id"))
                     if not event_id or event_id in seen_events:
                         continue
-
-                    _TODAY_RAW_EVENTS[event_id] = {
-                        "event": event,
-                        "league_code": code,
-                        "info": info
-                    }
 
                     comp = event["competitions"][0]
                     competitors = comp["competitors"]
@@ -2199,6 +2325,12 @@ def get_todays_matches(target_date: str = ""):
                         except Exception:
                             time_str = date_raw[11:16]
 
+                    # فلترة صارمة حسب التاريخ المحلي المختار (مع إبقاء المباريات الجارية الآن في تبويب اليوم)
+                    local_day_iso = local_kickoff.strftime("%Y-%m-%d") if local_kickoff else target_day_iso
+                    if not (not is_custom_date and state == "in"):
+                        if local_day_iso != target_day_iso:
+                            continue
+
                     if state == "in":
                         status_text = f"مباشر {display_clock}" if display_clock else "جارية الآن"
                         is_live = True
@@ -2206,19 +2338,13 @@ def get_todays_matches(target_date: str = ""):
                         is_live = False
                         if not is_custom_date and utc_kickoff:
                             utc_finish_time = utc_kickoff + timedelta(hours=2)
-                            hours_since_finish = (now_utc - utc_finish_time).total_seconds() / 3600.0
-                            if hours_since_finish > 24.0:
-                                continue
+                            hours_since_finish = max(0.0, (now_utc - utc_finish_time).total_seconds() / 3600.0)
                             status_text = "انتهت منذ قليل" if hours_since_finish <= 1.0 else f"انتهت (منذ {int(hours_since_finish)} س)"
                         else:
                             status_text = "انتهت"
                     else:
                         is_live = False
                         status_text = "لم تبدأ بعد"
-                        if not is_custom_date and utc_kickoff:
-                            hours_until_kickoff = (utc_kickoff - now_utc).total_seconds() / 3600.0
-                            if hours_until_kickoff < -2.0 or hours_until_kickoff > 24.0:
-                                continue
 
                     seen_events.add(event_id)
 
@@ -2247,7 +2373,10 @@ def get_todays_matches(target_date: str = ""):
                         kickoff_utc_ts=kickoff_utc_ts
                     )
 
-                    _TODAY_RAW_EVENTS[event_id].update({
+                    _store_today_raw_event(event_id, {
+                        "event": event,
+                        "league_code": code,
+                        "info": info,
                         "home_en": h_en_name,
                         "away_en": a_en_name,
                         "home_ar": h_ar_exact,
@@ -2271,19 +2400,19 @@ def get_todays_matches(target_date: str = ""):
                         "league_flag": info["flag"],
                         "kickoff_time": time_str,
                         "kickoff_iso": date_raw,
-                        "sort_ts": utc_kickoff.timestamp() if utc_kickoff else 0,
+                        "sort_ts": kickoff_utc_ts,
                         "status_text": status_text,
                         "state": state,
                         "is_live": is_live,
                         "home_id": str(h_raw["team"].get("id") or h_raw.get("id") or ""),
                         "home_team": h_disp_name,
                         "home_en": h_en_name,
-                        "home_crest": h_raw["team"].get("logo", "https://via.placeholder.com/40"),
+                        "home_crest": h_raw["team"].get("logo") or DEFAULT_CLUB_CREST,
                         "home_score": h_raw.get("score", "0") if state in ("in", "post") else "-",
                         "away_id": str(a_raw["team"].get("id") or a_raw.get("id") or ""),
                         "away_team": a_disp_name,
                         "away_en": a_en_name,
-                        "away_crest": a_raw["team"].get("logo", "https://via.placeholder.com/40"),
+                        "away_crest": a_raw["team"].get("logo") or DEFAULT_CLUB_CREST,
                         "away_score": a_raw.get("score", "0") if state in ("in", "post") else "-",
                         "venue": full_venue,
                         "channel": real_channel,
@@ -2311,40 +2440,13 @@ def get_todays_matches(target_date: str = ""):
 
     all_today_matches.sort(key=sort_key)
 
-    # جلب المعلقين الحقيقيين بالتوازي للمباريات المباشرة والقادمة (مخزّن في الكاش لعدم إبطاء التحديث)
+    # تخزين النتيجة فوراً ثم تشغيل سحب المعلقين في الخلفية بدون تأخير المستخدم
+    save_to_cache(cache_key, all_today_matches)
+
     to_hydrate = [m for m in all_today_matches if m.get("state") in ("pre", "in") and not m.get("commentator_verified")][:16]
     if to_hydrate:
-        def _hydrate_one_comm(m_obj):
-            ev_meta = _TODAY_RAW_EVENTS.get(m_obj["id"]) or {}
-            bcast = lookup_match_broadcast_on_demand(
-                m_obj["league_code"],
-                m_obj["id"],
-                m_obj.get("home_en", ""),
-                m_obj.get("away_en", ""),
-                m_obj.get("state", "pre"),
-                yk_url=ev_meta.get("yk_url", ""),
-                fg_url=ev_meta.get("fg_url", ""),
-                scores365_id=ev_meta.get("scores365_id", ""),
-                home_ar=ev_meta.get("home_ar", ""),
-                away_ar=ev_meta.get("away_ar", ""),
-                existing_channel=m_obj.get("channel", ""),
-                existing_ch_verified=bool(m_obj.get("channel_verified"))
-            )
-            if bcast.get("channel_verified"):
-                m_obj["channel"] = bcast["channel"]
-                m_obj["channel_verified"] = True
-            if bcast.get("commentator_verified"):
-                m_obj["commentator"] = bcast["commentator"]
-                m_obj["commentator_verified"] = True
-            ev_meta.update({
-                "channel": m_obj["channel"],
-                "commentator": m_obj["commentator"],
-                "channel_verified": m_obj["channel_verified"],
-                "commentator_verified": m_obj["commentator_verified"],
-            })
+        _hydrate_missing_commentators_bg(to_hydrate)
 
-        with ThreadPoolExecutor(max_workers=6) as ex_h:
-            list(ex_h.map(_hydrate_one_comm, to_hydrate))
     return all_today_matches
 # =========================================================================
 # 7. إحصائيات المباريات الحية ومسجلو الأهداف والتشكيلة المدمجة
@@ -2421,7 +2523,7 @@ def get_real_match_stats(league_code: str, match_id: str):
 # 8. محاكي نهاية الموسم (Monte Carlo)
 # =========================================================================
 def get_season_projections(league_code, num_sims=1500, force_refresh=False):
-    cache_key = f"monte_carlo_v5_{league_code}"
+    cache_key = f"monte_carlo_v6_{league_code}"
     cached_data, is_fresh = get_from_cache(cache_key, ttl=3600)
     if cached_data and is_fresh and not force_refresh:
         return cached_data
@@ -2430,153 +2532,17 @@ def get_season_projections(league_code, num_sims=1500, force_refresh=False):
     if not standings or len(standings) < 4:
         return []
 
-    from engine_core import get_league_rules
-    eng_rules = get_league_rules(league_code)
-    total_teams = len(standings)
-    rules = COMPETITION_FORMAT_RULES.get(league_code)
+    from engine_core import simulate_season_outcomes
+    results = simulate_season_outcomes(
+        league_code=league_code,
+        standings_data=standings,
+        num_sims=num_sims,
+        competition_rules=COMPETITION_FORMAT_RULES.get(league_code)
+    )
 
-    teams_data = []
-    for t in standings:
-        gp = max(1, t["played"])
-        lvl = t.get("level_code", "")
-        grp_name = t.get("group_name", "")
-
-        if league_code == "UNL":
-            t_games = 4 if lvl == "D" else 6
-        elif rules:
-            t_games = rules["total_games"]
-        else:
-            t_games = eng_rules.get("total_games", (total_teams - 1) * 2)
-
-        rem_games = max(0, t_games - gp)
-        pts_rate = t["points"] / gp
-        gd_factor = (t["gf"] - t["ga"]) / (gp * 3.0)
-        exp_rate = max(0.4, min(2.7, pts_rate + gd_factor))
-
-        teams_data.append({
-            "name": t.get("raw_name") or t["short_name"],
-            "short_name": t["short_name"],
-            "group_name": grp_name,
-            "level_code": lvl,
-            "rank": t.get("rank", 1),
-            "zone": t.get("zone", "safe"),
-            "status_badge": t.get("status_badge", ""),
-            "crest": t["crest"],
-            "current_pts": t["points"],
-            "played": gp,
-            "remaining": rem_games,
-            "rate": exp_rate,
-            "champ_wins": 0,
-            "top4_wins": 0,
-            "rel_drops": 0,
-            "total_sim_pts": 0.0
-        })
-
-    rates = np.array([t["rate"] for t in teams_data])
-    cur_pts = np.array([t["current_pts"] for t in teams_data])
-    rem_matches = np.array([t["remaining"] for t in teams_data])
-
-    # تقسيم الفهارس حسب المجموعات / المناطق / المستويات
-    group_map = {}
-    group_order_keys = []
-    for idx, td in enumerate(teams_data):
-        g_key = td["group_name"] or "ALL"
-        if g_key not in group_map:
-            group_map[g_key] = []
-            group_order_keys.append(g_key)
-        group_map[g_key].append(idx)
-
-    for _ in range(num_sims):
-        sim_rem_pts = np.random.normal(loc=rates * rem_matches, scale=np.sqrt(np.maximum(1, rem_matches)) * 1.15)
-        sim_rem_pts = np.clip(sim_rem_pts, 0, rem_matches * 3)
-        final_pts = cur_pts + sim_rem_pts
-
-        qualified_for_trophy = []
-
-        for g_key in group_order_keys:
-            g_indices = group_map[g_key]
-            g_arr = np.array(g_indices)
-            g_pts = final_pts[g_arr]
-            g_order = g_arr[np.argsort(-g_pts)]
-            g_len = len(g_order)
-            lvl = teams_data[g_indices[0]]["level_code"]
-
-            if league_code == "UNL":
-                if lvl == "A":
-                    # المستوى A: أول وثاني المجموعة يتأهلان لربع النهائي للمنافسة على اللقب، والرابع يهبط
-                    for q_idx in g_order[:min(2, g_len)]:
-                        teams_data[q_idx]["top4_wins"] += 1
-                        qualified_for_trophy.append(q_idx)
-                    if g_len >= 4:
-                        teams_data[g_order[-1]]["rel_drops"] += 1
-                elif lvl in ("B", "C"):
-                    # المستويان B و C: الأول يصعد مباشرة والثاني ملحق صعود، والأخير يهبط
-                    for q_idx in g_order[:min(2, g_len)]:
-                        teams_data[q_idx]["top4_wins"] += 1
-                    if g_len >= 4:
-                        teams_data[g_order[-1]]["rel_drops"] += 1
-                else:
-                    # المستوى D: الأول يصعد مباشرة والثاني ملحق صعود (لا يوجد هبوط)
-                    for q_idx in g_order[:min(2, g_len)]:
-                        teams_data[q_idx]["top4_wins"] += 1
-
-            elif rules:
-                q_cnt = min(g_len, rules["qualify"])
-                e_cnt = min(g_len, rules["elim"])
-                for q_idx in g_order[:q_cnt]:
-                    teams_data[q_idx]["top4_wins"] += 1
-                    qualified_for_trophy.append(q_idx)
-                if e_cnt > 0:
-                    for r_idx in g_order[-e_cnt:]:
-                        teams_data[r_idx]["rel_drops"] += 1
-            else:
-                top_spots = min(len(eng_rules.get("ucl", [1, 2, 3, 4])), g_len)
-                rel_spots = min(len(eng_rules.get("rel", [18, 19, 20])) + len(eng_rules.get("rel_playoff", [])), g_len)
-                for q_idx in g_order[:top_spots]:
-                    teams_data[q_idx]["top4_wins"] += 1
-                if rel_spots > 0:
-                    for r_idx in g_order[-rel_spots:]:
-                        teams_data[r_idx]["rel_drops"] += 1
-                teams_data[g_order[0]]["champ_wins"] += 1
-
-        if (league_code == "UNL" or rules) and qualified_for_trophy:
-            q_arr = np.array(qualified_for_trophy)
-            ko_score = final_pts[q_arr] + np.random.normal(0, 2.2, size=len(q_arr))
-            champ_idx = q_arr[np.argmax(ko_score)]
-            teams_data[champ_idx]["champ_wins"] += 1
-
-        for i in range(total_teams):
-            teams_data[i]["total_sim_pts"] += final_pts[i]
-
-    results = []
-    for g_key in group_order_keys:
-        g_list = []
-        for idx in group_map[g_key]:
-            t = teams_data[idx]
-            g_list.append({
-                "name": t["short_name"] or t["name"],
-                "full_name": t["name"],
-                "group_name": t["group_name"],
-                "level_code": t["level_code"],
-                "zone": t["zone"],
-                "status_badge": t["status_badge"],
-                "crest": t["crest"],
-                "current_pts": t["current_pts"],
-                "played": t["played"],
-                "projected_pts": round(float(t["total_sim_pts"] / num_sims), 1),
-                "champ_pct": round(float((t["champ_wins"] / num_sims) * 100.0), 1),
-                "top4_pct": round(float((t["top4_wins"] / num_sims) * 100.0), 1),
-                "rel_pct": round(float((t["rel_drops"] / num_sims) * 100.0), 1)
-            })
-        # ترتيب كل مجموعة/مستوى داخلياً حسب النقاط المتوقعة
-        g_list.sort(key=lambda x: (x["projected_pts"], x["current_pts"]), reverse=True)
-        for r_i, item in enumerate(g_list, 1):
-            item["group_rank"] = r_i
-        results.extend(g_list)
-
-    save_to_cache(cache_key, results)
+    if results:
+        save_to_cache(cache_key, results)
     return results
-
 
 # =========================================================================
 # 10. غرفة الأخبار الرياضية الحية (Live API + FIFO 20 Items)
@@ -2584,38 +2550,40 @@ def get_season_projections(league_code, num_sims=1500, force_refresh=False):
 def init_news_table():
     with _DB_LOCK:
         conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(sports_news);")
-        cols = [r[1] for r in cursor.fetchall()]
-        if cols and ("news_id" not in cols or "published_time" not in cols):
-            cursor.execute("DROP TABLE IF EXISTS sports_news;")
+        try:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(sports_news);")
+            cols = [r[1] for r in cursor.fetchall()]
+            if cols and ("news_id" not in cols or "published_time" not in cols):
+                cursor.execute("DROP TABLE IF EXISTS sports_news;")
 
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS sports_news (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                news_id TEXT UNIQUE,
-                title TEXT NOT NULL,
-                summary TEXT,
-                image_url TEXT,
-                source_url TEXT,
-                published_time TEXT,
-                created_at REAL
-            )
-        """)
-        conn.commit()
-        conn.close()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS sports_news (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    news_id TEXT UNIQUE,
+                    title TEXT NOT NULL,
+                    summary TEXT,
+                    image_url TEXT,
+                    source_url TEXT,
+                    published_time TEXT,
+                    created_at REAL
+                )
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+
 
 def fetch_live_online_news():
-    live_articles = []
-    seen_titles = set()
-
     rss_feeds = [
         "https://www.skynewsarabia.com/rss/sport.xml",
         "https://arabic.rt.com/rss/sport/",
         "https://news.google.com/rss/search?q=%D9%83%D8%B1%D8%A9+%D8%A7%D9%84%D9%82%D8%AF%D9%85+%D8%A3%D9%88%D8%B1%D9%88%D8%A8%D8%A7&hl=ar&gl=AE&ceid=AE:ar"
     ]
+    espn_news_leagues = ["eng.1", "esp.1", "uefa.champions", "ita.1", "ger.1"]
 
-    for feed_url in rss_feeds:
+    def _pull_rss(feed_url):
+        out = []
         try:
             req = urllib.request.Request(feed_url, headers=HEADERS)
             with urllib.request.urlopen(req, timeout=4.0, context=SSL_CONTEXT) as resp:
@@ -2623,10 +2591,8 @@ def fetch_live_online_news():
                 root = ET.fromstring(xml_content)
                 for item in root.findall(".//item")[:12]:
                     title = (item.findtext("title") or "").strip()
-                    if not title or title in seen_titles:
+                    if not title:
                         continue
-                    seen_titles.add(title)
-
                     raw_desc = (item.findtext("description") or "").strip()
                     desc = re.sub(r'<[^>]+>', '', raw_desc).strip()
                     if not desc or desc == title:
@@ -2644,7 +2610,7 @@ def fetch_live_online_news():
                         if img_match:
                             img_url = img_match.group(1)
 
-                    live_articles.append({
+                    out.append({
                         "id": hashlib.md5(title.encode("utf-8")).hexdigest()[:14],
                         "title": title,
                         "summary": desc,
@@ -2654,21 +2620,18 @@ def fetch_live_online_news():
                     })
         except Exception:
             pass
+        return out
 
-    espn_news_leagues = ["eng.1", "esp.1", "uefa.champions", "ita.1", "ger.1"]
-    for lg in espn_news_leagues:
-        if len(live_articles) >= 25:
-            break
+    def _pull_espn(lg):
+        out = []
         try:
             espn_url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{lg}/news"
             data = fetch_json_fast(espn_url, timeout=3.5)
             if isinstance(data, dict) and "articles" in data:
                 for art in data.get("articles", [])[:8]:
                     title = (art.get("headline") or "").strip()
-                    if not title or title in seen_titles:
+                    if not title:
                         continue
-                    seen_titles.add(title)
-
                     desc = (art.get("description") or art.get("story") or "").strip()
                     desc = re.sub(r'<[^>]+>', '', desc).strip()
 
@@ -2681,7 +2644,7 @@ def fetch_live_online_news():
                     web_link = links.get("web", {}).get("href", "") if isinstance(links, dict) else ""
                     pub_time = (art.get("published") or "")[:16].replace("T", " ")
 
-                    live_articles.append({
+                    out.append({
                         "id": str(art.get("id") or hashlib.md5(title.encode("utf-8")).hexdigest()[:14]),
                         "title": title,
                         "summary": desc or title,
@@ -2691,8 +2654,22 @@ def fetch_live_online_news():
                     })
         except Exception:
             pass
+        return out
 
-    return live_articles
+    live_articles = []
+    seen_titles = set()
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        rss_futs = [ex.submit(_pull_rss, u) for u in rss_feeds]
+        espn_futs = [ex.submit(_pull_espn, lg) for lg in espn_news_leagues]
+
+        for fut in rss_futs + espn_futs:
+            for art in (fut.result() or []):
+                if art["title"] not in seen_titles:
+                    seen_titles.add(art["title"])
+                    live_articles.append(art)
+
+    return live_articles[:30]
+
 
 def sync_and_get_news(force_refresh=False):
     cached, is_fresh = get_from_cache("global_sports_news", ttl=300)
@@ -2701,38 +2678,38 @@ def sync_and_get_news(force_refresh=False):
 
     init_news_table()
     now_ts = time.time()
-
     incoming_articles = fetch_live_online_news()
 
     with _DB_LOCK:
         conn = get_connection()
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
+            for idx, art in enumerate(incoming_articles[:20]):
+                item_ts = now_ts - (idx * 0.5)
+                cursor.execute("""
+                    INSERT OR IGNORE INTO sports_news 
+                    (news_id, title, summary, image_url, source_url, published_time, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (art["id"], art["title"], art["summary"], art["image_url"], art["source_url"], art["published_time"], item_ts))
 
-        for idx, art in enumerate(incoming_articles[:20]):
-            item_ts = now_ts - (idx * 0.5)
             cursor.execute("""
-                INSERT OR IGNORE INTO sports_news 
-                (news_id, title, summary, image_url, source_url, published_time, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (art["id"], art["title"], art["summary"], art["image_url"], art["source_url"], art["published_time"], item_ts))
+                DELETE FROM sports_news 
+                WHERE id NOT IN (
+                    SELECT id FROM sports_news 
+                    ORDER BY created_at DESC, id DESC 
+                    LIMIT 20
+                )
+            """)
+            conn.commit()
 
-        cursor.execute("""
-            DELETE FROM sports_news 
-            WHERE id NOT IN (
-                SELECT id FROM sports_news 
+            rows = cursor.execute("""
+                SELECT id, title, summary, image_url, source_url, published_time, created_at 
+                FROM sports_news 
                 ORDER BY created_at DESC, id DESC 
                 LIMIT 20
-            )
-        """)
-        conn.commit()
-
-        rows = cursor.execute("""
-            SELECT id, title, summary, image_url, source_url, published_time, created_at 
-            FROM sports_news 
-            ORDER BY created_at DESC, id DESC 
-            LIMIT 20
-        """).fetchall()
-        conn.close()
+            """).fetchall()
+        finally:
+            conn.close()
 
     news_list = [dict(r) for r in rows]
     if news_list:
@@ -5783,19 +5760,21 @@ def _init_ai_quiz_vault():
     try:
         with _DB_LOCK:
             conn = get_connection()
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS ai_quiz_vault (
-                    q_id TEXT PRIMARY KEY,
-                    category TEXT,
-                    region TEXT,
-                    league TEXT,
-                    difficulty TEXT,
-                    payload TEXT NOT NULL,
-                    created_at REAL
-                )
-            """)
-            conn.commit()
-            conn.close()
+            try:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS ai_quiz_vault (
+                        q_id TEXT PRIMARY KEY,
+                        category TEXT,
+                        region TEXT,
+                        league TEXT,
+                        difficulty TEXT,
+                        payload TEXT NOT NULL,
+                        created_at REAL
+                    )
+                """)
+                conn.commit()
+            finally:
+                conn.close()
     except Exception:
         pass
 
@@ -5805,8 +5784,10 @@ def _load_saved_ai_questions(region_filter="all", league_filter="ALL", category_
     try:
         with _DB_LOCK:
             conn = get_connection()
-            rows = conn.execute("SELECT payload FROM ai_quiz_vault ORDER BY created_at DESC LIMIT 800").fetchall()
-            conn.close()
+            try:
+                rows = conn.execute("SELECT payload FROM ai_quiz_vault ORDER BY created_at DESC LIMIT 800").fetchall()
+            finally:
+                conn.close()
         out = []
         for r in rows:
             q = json.loads(r["payload"])
@@ -5830,13 +5811,15 @@ def _save_ai_questions_to_vault(questions_list):
     try:
         with _DB_LOCK:
             conn = get_connection()
-            for q in questions_list:
-                conn.execute(
-                    "INSERT OR IGNORE INTO ai_quiz_vault (q_id, category, region, league, difficulty, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (q["id"], q.get("category", "trivia"), q.get("region", "all"), q.get("league", "ALL"), q.get("difficulty", "medium"), json.dumps(q, ensure_ascii=False), now_ts)
-                )
-            conn.commit()
-            conn.close()
+            try:
+                for q in questions_list:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO ai_quiz_vault (q_id, category, region, league, difficulty, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (q["id"], q.get("category", "trivia"), q.get("region", "all"), q.get("league", "ALL"), q.get("difficulty", "medium"), json.dumps(q, ensure_ascii=False), now_ts)
+                    )
+                conn.commit()
+            finally:
+                conn.close()
     except Exception:
         pass
 
@@ -9212,7 +9195,9 @@ def global_platform_search(query: str):
     clubs, nations, transfers, news = [], [], [], []
     seen_clubs, seen_nations = set(), set()
 
-    for cache_key, entry in list(_RAM_CACHE.items()):
+    with _CACHE_LOCK:
+        cache_snapshot = list(_RAM_CACHE.items())
+    for cache_key, entry in cache_snapshot:
         data = entry.get("data") if isinstance(entry, dict) else None
         if not data:
             continue
